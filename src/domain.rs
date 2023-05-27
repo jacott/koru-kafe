@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use hyper::{Body, Request, Response};
 use radix_trie::Trie;
 use std::{collections::HashMap, error::Error, fmt::Display, net::IpAddr, sync::Arc};
+use tokio_rustls::rustls;
 
 use crate::koru_proxy;
 
@@ -12,6 +13,8 @@ pub type DomainMap = HashMap<String, Arc<Domain>>;
 #[derive(Default)]
 pub struct Domain {
     pub root: String,
+    pub cert_path: String,
+    pub tls_config: Option<Arc<rustls::ServerConfig>>,
     pub proxies: HashMap<String, ProxyConf>,
     pub locations: HashMap<String, RcDynLocation>,
     pub location_prefixes: Trie<String, RcDynLocation>,

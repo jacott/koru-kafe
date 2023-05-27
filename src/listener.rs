@@ -1,5 +1,4 @@
-use crate::domain::DomainMap;
-use crate::Result;
+use crate::domain::{Domain, DomainMap};
 use hyper::header::HOST;
 use hyper::server::conn::Http;
 use hyper::service::service_fn;
@@ -11,22 +10,14 @@ use tokio::net::TcpListener;
 async fn handler(
     req: Request<Body>,
     ip_addr: IpAddr,
-    domains: Arc<DomainMap>,
-) -> Result<Response<Body>> {
+    domain: crate::Result<Arc<Domain>>,
+) -> crate::Result<Response<Body>> {
+    let domain = domain?;
     let path = req.uri().path();
-    let host_raw = req.headers()[HOST].to_str()?;
-    let host = match host_raw.rfind(':') {
-        Some(idx) => &host_raw[..idx],
-        None => host_raw,
-    };
-    let dom = match domains.get(host) {
-        None => return Err(format!("Unhandled Host: {}", host).into()),
-        Some(dom) => dom,
-    };
-    match dom.find_location(path) {
+    match domain.find_location(path) {
         None => Err(format!("Unhandled path: {}", path).into()),
         Some(loc) => {
-            let loc = match loc.convert(dom, &req, &ip_addr)? {
+            let loc = match loc.convert(&domain, &req, &ip_addr)? {
                 None => loc,
                 Some(loc) => loc,
             };
@@ -35,19 +26,38 @@ async fn handler(
     }
 }
 
-pub async fn listen(addr: String, domains: DomainMap) -> Result<()> {
+fn with_domain<T>(req: &Request<T>, domains: &DomainMap) -> crate::Result<Arc<Domain>> {
+    if let Some(host_raw) = req.headers().get(HOST) {
+        if let Ok(host_raw) = host_raw.to_str() {
+            let host = match host_raw.rfind(':') {
+                Some(idx) => &host_raw[..idx],
+                None => host_raw,
+            };
+            match domains.get(host) {
+                Some(domain) => return Ok(domain.clone()),
+                None => return Err(format!("Unhandled Host: {}", host).into()),
+            }
+        }
+    }
+    Ok(domains.iter().next().expect("No domains!").1.clone())
+}
+
+pub async fn listen(addr: String, domains: DomainMap) -> crate::Result<()> {
     let listener = TcpListener::bind(&addr).await?;
     println!("Server started, listening on {}", addr);
     let domains = Arc::new(domains);
     loop {
-        let domains = domains.clone();
         let (stream, _) = listener.accept().await?;
+        let domains = domains.clone();
         let ip_addr = stream.peer_addr().unwrap().ip();
         tokio::spawn(async move {
             let conn_fut = Http::new()
                 .serve_connection(
                     stream,
-                    service_fn(move |req| handler(req, ip_addr, domains.clone())),
+                    service_fn(move |req| {
+                        let domain = with_domain(&req, &domains);
+                        handler(req, ip_addr, domain)
+                    }),
                 )
                 .with_upgrades();
             if let Err(e) = conn_fut.await {
@@ -55,4 +65,43 @@ pub async fn listen(addr: String, domains: DomainMap) -> Result<()> {
             }
         });
     }
+}
+
+pub async fn tls_listen(addr: String, domains: DomainMap) -> crate::Result<()> {
+    let listener = TcpListener::bind(&addr).await?;
+    println!("Server started, listening on {}", addr);
+    let domains = Arc::new(domains);
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let domains = domains.clone();
+        let ip_addr = stream.peer_addr().unwrap().ip();
+        tokio::spawn(async move {
+            let conn_fut = Http::new()
+                .serve_connection(
+                    stream,
+                    service_fn(move |req| {
+                        let domain = with_domain(&req, &domains);
+                        handler(req, ip_addr, domain)
+                    }),
+                )
+                .with_upgrades();
+            if let Err(e) = conn_fut.await {
+                println!("An error occurred: {:?}", e);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // use super::*;
+    // use hyper::HeaderMap;
+
+    // #[test]
+    // fn header_map() {
+    //     let mut map = HeaderMap::new();
+    //     //        map.insert(HOST, "hello".parse().unwrap());
+
+    //     assert_eq!(map.get(HOST).unwrap_or(""), "");
+    // }
 }

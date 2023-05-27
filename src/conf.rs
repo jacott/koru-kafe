@@ -1,12 +1,14 @@
 use crate::domain::{self, Domain, DynLocation};
 use directories::ProjectDirs;
-use radix_trie::Trie;
 use serde_derive::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    fs, io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use std::{error::Error, fmt};
+use tokio_rustls::rustls;
 use yaml_rust::{Yaml, YamlLoader};
 
 pub mod domain_conf;
@@ -52,7 +54,7 @@ impl ConfError {
             } else {
                 "???".to_string()
             },
-            field: field.to_string(),
+            field: field.to_owned(),
             info: info.to_owned(),
         }
     }
@@ -86,7 +88,7 @@ fn convert_err<T, E: Error>(pbuf: &Path, r: Result<T, E>) -> Result<T, ConfError
     }
 }
 
-fn load_domain(path: &Path) -> Result<(Vec<String>, Arc<Domain>, String), ConfError> {
+fn load_domain(path: &Path) -> Result<(Vec<String>, Domain, String), ConfError> {
     eprintln!("entry {:?}", path);
     let cfg = convert_err(path, fs::read_to_string(path))?;
     let docs = convert_err(path, YamlLoader::load_from_str(&cfg))?;
@@ -115,12 +117,24 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Arc<Domain>, String), ConfEr
             }
         }?;
 
-        let mut domain = Domain {
-            root: String::new(),
-            proxies: HashMap::new(),
-            locations: HashMap::new(),
-            location_prefixes: Trie::new(),
+        let mut domain: Domain = Default::default();
+
+        let opt_field = |field: &str| {
+            let field = field.to_string();
+            match map.get(&Yaml::String(field.clone())) {
+                None => Ok(String::new()),
+                Some(v) => {
+                    if let Some(v) = v.as_str() {
+                        Ok(v.to_string())
+                    } else {
+                        Err(ConfError::new(path, &field, "Invalid value"))
+                    }
+                }
+            }
         };
+
+        domain.root = opt_field("root")?;
+        domain.cert_path = opt_field("cert_path")?;
 
         let field = &"proxies";
         if let Some(paths) = get_field(field)?.as_hash() {
@@ -159,7 +173,7 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Arc<Domain>, String), ConfEr
         }
         let mut name = path.file_name().unwrap().to_string_lossy().to_string();
         name.truncate(name.len() - 4);
-        Ok((listeners, Arc::new(domain), name))
+        Ok((listeners, domain, name))
     } else {
         Err(cerr("", "Expected hash"))
     }
@@ -234,7 +248,9 @@ fn websocket_proxy_from_yaml(domain: &Domain, t: &Yaml) -> Option<Arc<DynLocatio
     }))
 }
 
-pub fn load() -> Result<HashMap<String, domain::DomainMap>, ConfError> {
+pub type ListernerMap = HashMap<String, domain::DomainMap>;
+
+pub fn load() -> Result<(ListernerMap, ListernerMap), ConfError> {
     let pdir = ProjectDirs::from("", "", "koru-kafe");
     if pdir.is_none() {
         return Err(ConfError::new(
@@ -245,7 +261,10 @@ pub fn load() -> Result<HashMap<String, domain::DomainMap>, ConfError> {
     }
     let pdir = pdir.unwrap();
     let cdir = pdir.config_dir();
-    let mut listener_map = HashMap::new();
+    let mut tls_map = HashMap::new(); // TLS encrypted socket listener
+    let mut psl_map = HashMap::new(); // unencrypted socket listener
+    let mut tls_config_map: HashMap<String, Arc<rustls::ServerConfig>> = HashMap::new();
+
     for entry in convert_err(cdir, fs::read_dir(cdir))?.filter_map(|entry| {
         entry.ok().and_then(|e| {
             e.path().file_name()?.to_str().and_then(|n| {
@@ -258,13 +277,78 @@ pub fn load() -> Result<HashMap<String, domain::DomainMap>, ConfError> {
             })
         })
     }) {
-        let (listeners, domain, domain_name) = load_domain(&entry.path())?;
+        let (listeners, mut domain, domain_name) = load_domain(&entry.path())?;
+
+        if let Some(config) = tls_config_map.get(&domain.cert_path) {
+            domain.tls_config = Some(config.clone());
+        } else {
+            match set_cert(&mut domain) {
+                Ok(config) => tls_config_map.insert(domain.cert_path.clone(), config),
+                Err(err) => return Err(ConfError::new(&entry.path(), "cert_path", &err.to_string())),
+            };
+        }
+        let domain = Arc::new(domain);
         for l in listeners {
-            let entry = listener_map.entry(l).or_insert(HashMap::new());
+            let entry = if domain.cert_path.is_empty() {
+                psl_map.entry(l).or_insert(HashMap::new())
+            } else {
+                tls_map.entry(l).or_insert(HashMap::new())
+            };
             entry.insert(domain_name.to_string(), domain.clone());
         }
     }
-    Ok(listener_map)
+    Ok((tls_map, psl_map))
+}
+
+fn set_cert(domain: &mut Domain) -> Result<Arc<rustls::ServerConfig>, io::Error> {
+    let mut cert = PathBuf::from(&domain.cert_path);
+    let mut priv_key = cert.clone();
+    cert.push("fullchain.pem");
+    priv_key.push("privKey.pem");
+    let cert = load_certs(&cert)?;
+    let priv_key = load_key(&priv_key)?;
+
+    let mut config = rustls::ServerConfig::builder()
+        .with_safe_defaults()
+        .with_no_client_auth()
+        .with_single_cert(cert, priv_key)
+        .unwrap();
+
+    config.alpn_protocols.push(b"h2".to_vec());
+    config.alpn_protocols.push(b"http/1.1".to_vec());
+
+    let config = Arc::new(config);
+    domain.tls_config = Some(config.clone());
+
+    Ok(config)
+}
+
+fn load_certs(path: &Path) -> io::Result<Vec<rustls::Certificate>> {
+    rustls_pemfile::certs(&mut io::BufReader::new(fs::File::open(path)?))
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
+        .map(|mut certs| certs.drain(..).map(rustls::Certificate).collect())
+}
+
+fn load_key(path: &Path) -> io::Result<rustls::PrivateKey> {
+    eprintln!("DEBUG path {:?}", path);
+
+    let keyfile = fs::File::open(path)?;
+    let mut reader = io::BufReader::new(keyfile);
+
+    loop {
+        match rustls_pemfile::read_one(&mut reader)? {
+            Some(rustls_pemfile::Item::RSAKey(key)) => return Ok(rustls::PrivateKey(key)),
+            Some(rustls_pemfile::Item::PKCS8Key(key)) => return Ok(rustls::PrivateKey(key)),
+            Some(rustls_pemfile::Item::ECKey(key)) => return Ok(rustls::PrivateKey(key)),
+            None => break,
+            _ => {}
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("no keys found in {:?} (encrypted keys not supported)", path),
+    ))
 }
 
 #[cfg(test)]

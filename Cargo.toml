@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1.28.1", features = ["full"] }
+tokio = { version = "1.28.2", features = ["full"] }
 hyper = { version = "0.14.26", features = ["http1", "http2", "server", "client", "runtime", "tcp", "stream"] }
 fastwebsockets = { version = "0.4.2", features = ["upgrade"] }
 mime_guess = "2.0.4"
@@ -19,6 +19,8 @@ radix_trie = "0.2.1"
 regex = "1.8.3"
 lazy_static = "1.4.0"
 async-trait = "0.1.68"
+tokio-rustls = "0.24.0"
+rustls-pemfile = "1.0.2"
 
 [dev-dependencies]
 tokio-test = "0.4.2"
