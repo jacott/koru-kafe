@@ -29,11 +29,7 @@ where
     }
 }
 
-pub async fn websocket(
-    fut: upgrade::UpgradeFut,
-    mut req: Request<Body>,
-    ip_addr: IpAddr,
-) -> Result<()> {
+pub async fn websocket(fut: upgrade::UpgradeFut, mut req: Request<Body>, ip_addr: IpAddr) -> Result<()> {
     convert_req(&mut req, &ip_addr);
 
     let mut ws_r = fut.await?;
@@ -74,20 +70,13 @@ pub async fn websocket(
     Ok(())
 }
 
-pub async fn pass(
-    mut req: Request<Body>,
-    ip_addr: IpAddr,
-    server_socket: &str,
-) -> crate::Result<Response<Body>> {
+pub async fn pass(mut req: Request<Body>, ip_addr: IpAddr, server_socket: &str) -> crate::Result<Response<Body>> {
     convert_req(&mut req, &ip_addr);
 
     *req.uri_mut() = format!(
         "http://{}{}",
         server_socket,
-        req.uri()
-            .path_and_query()
-            .map(|x| x.as_str())
-            .unwrap_or("/")
+        req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/")
     )
     .parse()
     .unwrap();

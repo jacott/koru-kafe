@@ -73,11 +73,7 @@ impl Error for ConfError {
 impl fmt::Display for ConfError {
     // col starts from 0
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            formatter,
-            "{} at filed {} file {}",
-            self.info, self.field, self.file
-        )
+        write!(formatter, "{} at filed {} file {}", self.info, self.field, self.file)
     }
 }
 
@@ -105,10 +101,7 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain, String), ConfError> 
         let listeners = match get_field(field)?.as_vec() {
             None => Err(cerr(field, "Expected String Vector")),
             Some(v) => {
-                let vs: Vec<String> = v
-                    .iter()
-                    .filter_map(|v| v.as_str().map(|v| v.to_string()))
-                    .collect();
+                let vs: Vec<String> = v.iter().filter_map(|v| v.as_str().map(|v| v.to_string())).collect();
                 if v.len() == vs.len() {
                     Ok(vs)
                 } else {
@@ -143,9 +136,7 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain, String), ConfError> 
                 if v.as_hash().is_none() {
                     return Err(cerr(field, &format!("Invalid value {:?}", v)));
                 }
-                domain
-                    .proxies
-                    .insert(k.to_string(), load_proxy(path, k, v)?);
+                domain.proxies.insert(k.to_string(), load_proxy(path, k, v)?);
             }
         }
 
@@ -196,12 +187,7 @@ fn load_proxy(path: &Path, k: &str, v: &Yaml) -> Result<domain::ProxyConf, ConfE
     Err(ConfError::new(path, k, &format!("Invalid value {:?}", v)))
 }
 
-fn load_location(
-    domain: &Domain,
-    path: &Path,
-    k: &str,
-    v: &Yaml,
-) -> Result<Arc<DynLocation>, ConfError> {
+fn load_location(domain: &Domain, path: &Path, k: &str, v: &Yaml) -> Result<Arc<DynLocation>, ConfError> {
     if let Some(v) = v.as_hash() {
         let mut iter = v.iter();
         if let Some(t) = iter.next() {
@@ -230,21 +216,13 @@ fn rewrite_from_yaml(t: &Yaml) -> Option<Arc<DynLocation>> {
 
 fn http_proxy_from_yaml(domain: &Domain, t: &Yaml) -> Option<Arc<DynLocation>> {
     Some(Arc::new(domain::HttpProxy {
-        server_socket: domain
-            .proxies
-            .get(&t.as_str()?.to_string())?
-            .server_socket
-            .clone(),
+        server_socket: domain.proxies.get(&t.as_str()?.to_string())?.server_socket.clone(),
     }))
 }
 
 fn websocket_proxy_from_yaml(domain: &Domain, t: &Yaml) -> Option<Arc<DynLocation>> {
     Some(Arc::new(domain::WebsocketProxy {
-        server_socket: domain
-            .proxies
-            .get(&t.as_str()?.to_string())?
-            .server_socket
-            .clone(),
+        server_socket: domain.proxies.get(&t.as_str()?.to_string())?.server_socket.clone(),
     }))
 }
 
@@ -253,11 +231,7 @@ pub type ListernerMap = HashMap<String, domain::DomainMap>;
 pub fn load() -> Result<(ListernerMap, ListernerMap), ConfError> {
     let pdir = ProjectDirs::from("", "", "koru-kafe");
     if pdir.is_none() {
-        return Err(ConfError::new(
-            &PathBuf::new(),
-            "???",
-            "Can't find config dir",
-        ));
+        return Err(ConfError::new(&PathBuf::new(), "???", "Can't find config dir"));
     }
     let pdir = pdir.unwrap();
     let cdir = pdir.config_dir();

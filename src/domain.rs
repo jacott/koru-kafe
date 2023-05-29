@@ -55,11 +55,7 @@ pub trait Location {
         Ok(None)
     }
 
-    async fn connect(
-        &self,
-        _req: Request<Body>,
-        _ip_addr: IpAddr,
-    ) -> crate::Result<Response<Body>> {
+    async fn connect(&self, _req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
         Err(Box::new(NoConnect))
     }
 }
@@ -100,17 +96,11 @@ pub struct WebsocketProxy {
 
 #[async_trait]
 impl Location for WebsocketProxy {
-    async fn connect(
-        &self,
-        mut req: Request<Body>,
-        ip_addr: IpAddr,
-    ) -> crate::Result<Response<Body>> {
+    async fn connect(&self, mut req: Request<Body>, ip_addr: IpAddr) -> crate::Result<Response<Body>> {
         let (response, fut) = fastwebsockets::upgrade::upgrade(&mut req)?;
 
         tokio::task::spawn(async move {
-            if let Err(e) =
-                tokio::task::unconstrained(koru_proxy::websocket(fut, req, ip_addr)).await
-            {
+            if let Err(e) = tokio::task::unconstrained(koru_proxy::websocket(fut, req, ip_addr)).await {
                 eprintln!("Error in websocket connection: {}", e);
             }
         });
@@ -131,11 +121,7 @@ mod tests {
 
     #[async_trait]
     impl Location for Foo {
-        async fn connect(
-            &self,
-            _req: Request<Body>,
-            _ip_addr: IpAddr,
-        ) -> crate::Result<Response<Body>> {
+        async fn connect(&self, _req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
             let ans = tokio::join!(tokio::task::spawn(async move {
                 println!("{:?}", _req);
                 _req
@@ -148,8 +134,7 @@ mod tests {
     #[tokio::test]
     async fn connect() {
         let mut d: Domain = Default::default();
-        d.location_prefixes
-            .insert("/".to_string(), Arc::new(Foo {}));
+        d.location_prefixes.insert("/".to_string(), Arc::new(Foo {}));
 
         let req = Default::default();
         let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
@@ -168,8 +153,7 @@ mod tests {
     #[tokio::test]
     async fn rewrite() {
         let mut d: Domain = Default::default();
-        d.location_prefixes
-            .insert("/".to_string(), Arc::new(Foo {}));
+        d.location_prefixes.insert("/".to_string(), Arc::new(Foo {}));
 
         let req = Default::default();
         let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
