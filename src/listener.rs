@@ -7,40 +7,45 @@ use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio_rustls::rustls;
+use tokio_rustls::LazyConfigAcceptor;
 
-async fn handler(
-    req: Request<Body>,
-    ip_addr: IpAddr,
-    domain: crate::Result<Arc<Domain>>,
-) -> crate::Result<Response<Body>> {
-    let domain = domain?;
-    let path = req.uri().path();
-    match domain.find_location(path) {
-        None => Err(format!("Unhandled path: {}", path).into()),
-        Some(loc) => {
-            let loc = match loc.convert(&domain, &req, &ip_addr)? {
-                None => loc,
-                Some(loc) => loc,
-            };
-            loc.connect(req, ip_addr).await
+async fn handler(req: Request<Body>, ip_addr: IpAddr, domain: Option<Arc<Domain>>) -> crate::Result<Response<Body>> {
+    if let Some(domain) = domain {
+        let path = req.uri().path();
+        match domain.find_location(path) {
+            None => Err(format!("Unhandled path: {}", path).into()),
+            Some(loc) => {
+                let loc = match loc.convert(&domain, &req, &ip_addr)? {
+                    None => loc,
+                    Some(loc) => loc,
+                };
+                loc.connect(req, ip_addr).await
+            }
         }
+    } else {
+        Err(Box::new(io::Error::new(io::ErrorKind::NotFound, "Not found")))
     }
 }
 
-fn with_domain<T>(req: &Request<T>, domains: &DomainMap) -> crate::Result<Arc<Domain>> {
+fn host_from_req<T>(req: &Request<T>) -> Option<&str> {
     if let Some(host_raw) = req.headers().get(HOST) {
         if let Ok(host_raw) = host_raw.to_str() {
-            let host = match host_raw.rfind(':') {
+            match host_raw.rfind(':') {
                 Some(idx) => &host_raw[..idx],
                 None => host_raw,
             };
-            match domains.get(host) {
-                Some(domain) => return Ok(domain.clone()),
-                None => return Err(format!("Unhandled Host: {}", host).into()),
-            }
         }
     }
-    Ok(domains.iter().next().expect("No domains!").1.clone())
+    None
+}
+
+fn with_domain(host: Option<&str>, domains: &DomainMap) -> Option<Arc<Domain>> {
+    if let Some(host) = host {
+        Some(domains.get(host)?.clone())
+    } else {
+        None
+    }
 }
 
 pub async fn listen(addr: String, domains: DomainMap) -> crate::Result<()> {
@@ -59,7 +64,8 @@ pub async fn listen(addr: String, domains: DomainMap) -> crate::Result<()> {
                 .serve_connection(
                     stream,
                     service_fn(move |req| {
-                        let domain = with_domain(&req, &domains);
+                        let host = host_from_req(&req);
+                        let domain = with_domain(host, &domains);
                         handler(req, ip_addr, domain)
                     }),
                 )
@@ -79,20 +85,27 @@ pub async fn tls_listen(addr: String, domains: DomainMap) -> crate::Result<()> {
     let domains = Arc::new(domains);
     loop {
         let (stream, _) = listener.accept().await?;
-        let domains = domains.clone();
         let ip_addr = stream.peer_addr().unwrap().ip();
+        let acceptor = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream);
+        let domains = domains.clone();
         tokio::spawn(async move {
-            let conn_fut = Http::new()
-                .serve_connection(
-                    stream,
-                    service_fn(move |req| {
-                        let domain = with_domain(&req, &domains);
-                        handler(req, ip_addr, domain)
-                    }),
-                )
-                .with_upgrades();
-            if let Err(e) = conn_fut.await {
-                println!("An error occurred: {:?}", e);
+            let start = acceptor.await.unwrap();
+
+            let client_hello = start.client_hello();
+            let host = client_hello.server_name();
+
+            if let Some(domain) = with_domain(host, &domains) {
+                let stream = start.into_stream(domain.tls_config.clone().unwrap()).await.unwrap();
+
+                let conn_fut = Http::new()
+                    .serve_connection(
+                        stream,
+                        service_fn(move |req| handler(req, ip_addr, Some(domain.clone()))),
+                    )
+                    .with_upgrades();
+                if let Err(e) = conn_fut.await {
+                    println!("An error occurred: {:?}", e);
+                }
             }
         });
     }
