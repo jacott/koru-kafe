@@ -1,20 +1,23 @@
 use crate::domain::{self, Domain, DynLocation};
 use directories::ProjectDirs;
+use lazy_static::lazy_static;
 use serde_derive::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use std::{error::Error, fmt};
 use tokio_rustls::rustls;
 use yaml_rust::{Yaml, YamlLoader};
 
+pub type ListernerMap = HashMap<String, domain::DomainMap>;
+
 pub mod domain_conf;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-pub struct Conf {}
+pub struct Conf;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Listener {
@@ -74,6 +77,75 @@ fn convert_err<T, E: Error>(pbuf: &Path, r: Result<T, E>) -> Result<T, ConfError
         Ok(r) => Ok(r),
         Err(err) => Err(ConfError::new(pbuf, "", &err.to_string())),
     }
+}
+
+pub trait LocationBuilder {
+    fn yaml_to_location(&self, domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String>;
+}
+
+type DynLocationBuilder = dyn LocationBuilder + Sync + Send;
+
+struct RewriteBuilder;
+impl LocationBuilder for RewriteBuilder {
+    fn yaml_to_location(&self, _domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
+        match yaml.as_str() {
+            Some(s) => Ok(Arc::new(domain::Rewrite { path: s.to_string() })),
+            None => Err("Invalid rewrite rule; expected string".to_string()),
+        }
+    }
+}
+
+struct HttpProxyBuilder;
+impl LocationBuilder for HttpProxyBuilder {
+    fn yaml_to_location(&self, domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
+        match yaml.as_str() {
+            Some(s) => match domain.proxies.get(&s.to_string()) {
+                Some(proxy) => Ok(Arc::new(domain::HttpProxy {
+                    server_socket: proxy.server_socket.clone(),
+                })),
+                None => Err(format!("Proxy not found! {}", s)),
+            },
+            None => Err("Invalid http_proxy rule; expected string".to_string()),
+        }
+    }
+}
+
+struct WebsocketProxyBuilder;
+impl LocationBuilder for WebsocketProxyBuilder {
+    fn yaml_to_location(&self, domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
+        match yaml.as_str() {
+            Some(s) => match domain.proxies.get(&s.to_string()) {
+                Some(proxy) => Ok(Arc::new(domain::WebsocketProxy {
+                    server_socket: proxy.server_socket.clone(),
+                })),
+                None => Err(format!("Proxy not found! {}", s)),
+            },
+            None => Err("Invalid websocket_proxy rule; expected string".to_string()),
+        }
+    }
+}
+
+pub struct LocationBuilders {
+    map: Mutex<HashMap<String, Arc<DynLocationBuilder>>>,
+}
+impl LocationBuilders {
+    pub fn add(name: &str, builder: Arc<DynLocationBuilder>) {
+        LOCATION_BUILDERS.map.lock().unwrap().insert(name.to_string(), builder);
+    }
+
+    pub fn get(name: &str) -> Option<Arc<DynLocationBuilder>> {
+        LOCATION_BUILDERS.map.lock().unwrap().get(name).cloned()
+    }
+}
+
+lazy_static! {
+    static ref LOCATION_BUILDERS: LocationBuilders = {
+        let mut m: HashMap<String, Arc<DynLocationBuilder>> = HashMap::new();
+        m.insert("rewrite".to_string(), Arc::new(RewriteBuilder));
+        m.insert("http_proxy".to_string(), Arc::new(HttpProxyBuilder));
+        m.insert("websocket_proxy".to_string(), Arc::new(WebsocketProxyBuilder));
+        LocationBuilders { map: Mutex::new(m) }
+    };
 }
 
 fn load_domain(path: &Path) -> Result<(Vec<String>, Domain, String), ConfError> {
@@ -184,14 +256,12 @@ fn load_location(domain: &Domain, path: &Path, k: &str, v: &Yaml) -> Result<Arc<
         let mut iter = v.iter();
         if let Some(t) = iter.next() {
             if iter.next().is_none() {
-                let loc = match t.0.as_str().unwrap_or("") {
-                    "rewrite" => rewrite_from_yaml(t.1),
-                    "http_proxy" => http_proxy_from_yaml(domain, t.1),
-                    "websocket_proxy" => websocket_proxy_from_yaml(domain, t.1),
-                    _ => None,
-                };
-                if let Some(loc) = loc {
-                    return Ok(loc);
+                if let Some(name) = t.0.as_str() {
+                    if let Some(lb) = LocationBuilders::get(name) {
+                        return lb
+                            .yaml_to_location(domain, t.1)
+                            .map_err(|e| ConfError::new(path, name, &e));
+                    }
                 }
             }
         }
@@ -199,26 +269,6 @@ fn load_location(domain: &Domain, path: &Path, k: &str, v: &Yaml) -> Result<Arc<
 
     Err(ConfError::new(path, k, &format!("Invalid value {:?}", v)))
 }
-
-fn rewrite_from_yaml(t: &Yaml) -> Option<Arc<DynLocation>> {
-    Some(Arc::new(domain::Rewrite {
-        path: t.as_str()?.to_string(),
-    }))
-}
-
-fn http_proxy_from_yaml(domain: &Domain, t: &Yaml) -> Option<Arc<DynLocation>> {
-    Some(Arc::new(domain::HttpProxy {
-        server_socket: domain.proxies.get(&t.as_str()?.to_string())?.server_socket.clone(),
-    }))
-}
-
-fn websocket_proxy_from_yaml(domain: &Domain, t: &Yaml) -> Option<Arc<DynLocation>> {
-    Some(Arc::new(domain::WebsocketProxy {
-        server_socket: domain.proxies.get(&t.as_str()?.to_string())?.server_socket.clone(),
-    }))
-}
-
-pub type ListernerMap = HashMap<String, domain::DomainMap>;
 
 pub fn load() -> Result<(ListernerMap, ListernerMap), ConfError> {
     let pdir = ProjectDirs::from("", "", "koru-kafe");

@@ -117,7 +117,7 @@ mod tests {
 
     use super::*;
 
-    struct Foo {}
+    struct Foo;
 
     #[async_trait]
     impl Location for Foo {

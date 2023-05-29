@@ -1,0 +1,12 @@
+* MVP
+** turn errors into net::Response
+** add static_files
+include headers: modified, etag
+static compression: gzip, br
+** unit tests
+** integration tests (https://github.com/tokio-rs/turmoil)
+
+
+* Features
+** static_files supports mem caching
+** use multiplexed unix socket
