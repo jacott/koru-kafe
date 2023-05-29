@@ -11,8 +11,8 @@ use tokio_rustls::rustls;
 use tokio_rustls::LazyConfigAcceptor;
 
 async fn handler(req: Request<Body>, ip_addr: IpAddr, domain: Option<Arc<Domain>>) -> crate::Result<Response<Body>> {
+    let path = req.uri().path();
     if let Some(domain) = domain {
-        let path = req.uri().path();
         match domain.find_location(path) {
             None => Err(format!("Unhandled path: {}", path).into()),
             Some(loc) => {
@@ -24,17 +24,18 @@ async fn handler(req: Request<Body>, ip_addr: IpAddr, domain: Option<Arc<Domain>
             }
         }
     } else {
-        Err(Box::new(io::Error::new(io::ErrorKind::NotFound, "Not found")))
+        eprintln!("{} 404", &path);
+        Ok(Response::builder().status(404).body(Body::from("Not found"))?)
     }
 }
 
 fn host_from_req<T>(req: &Request<T>) -> Option<&str> {
     if let Some(host_raw) = req.headers().get(HOST) {
         if let Ok(host_raw) = host_raw.to_str() {
-            match host_raw.rfind(':') {
+            return Some(match host_raw.rfind(':') {
                 Some(idx) => &host_raw[..idx],
                 None => host_raw,
-            };
+            });
         }
     }
     None
