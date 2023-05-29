@@ -60,15 +60,7 @@ impl ConfError {
     }
 }
 
-impl Error for ConfError {
-    fn description(&self) -> &str {
-        self.info.as_ref()
-    }
-
-    fn cause(&self) -> Option<&dyn Error> {
-        None
-    }
-}
+impl Error for ConfError {}
 
 impl fmt::Display for ConfError {
     // col starts from 0
@@ -245,7 +237,6 @@ pub fn load() -> Result<(ListernerMap, ListernerMap), ConfError> {
                 if n.ends_with(".yml") && n != "default-config.yml" {
                     Some(e)
                 } else {
-                    eprintln!("n {:?}", n);
                     None
                 }
             })
@@ -253,13 +244,15 @@ pub fn load() -> Result<(ListernerMap, ListernerMap), ConfError> {
     }) {
         let (listeners, mut domain, domain_name) = load_domain(&entry.path())?;
 
-        if let Some(config) = tls_config_map.get(&domain.cert_path) {
-            domain.tls_config = Some(config.clone());
-        } else {
-            match set_cert(&mut domain) {
-                Ok(config) => tls_config_map.insert(domain.cert_path.clone(), config),
-                Err(err) => return Err(ConfError::new(&entry.path(), "cert_path", &err.to_string())),
-            };
+        if !domain.cert_path.is_empty() {
+            if let Some(config) = tls_config_map.get(&domain.cert_path) {
+                domain.tls_config = Some(config.clone());
+            } else {
+                tls_config_map.insert(
+                    domain.cert_path.clone(),
+                    set_cert(&mut domain).map_err(|msg| ConfError::new(&entry.path(), "cert_path", &msg))?,
+                );
+            }
         }
         let domain = Arc::new(domain);
         for l in listeners {
@@ -274,13 +267,13 @@ pub fn load() -> Result<(ListernerMap, ListernerMap), ConfError> {
     Ok((tls_map, psl_map))
 }
 
-fn set_cert(domain: &mut Domain) -> Result<Arc<rustls::ServerConfig>, io::Error> {
+fn set_cert(domain: &mut Domain) -> Result<Arc<rustls::ServerConfig>, String> {
     let mut cert = PathBuf::from(&domain.cert_path);
     let mut priv_key = cert.clone();
     cert.push("fullchain.pem");
-    priv_key.push("privKey.pem");
-    let cert = load_certs(&cert)?;
-    let priv_key = load_key(&priv_key)?;
+    priv_key.push("privkey.pem");
+    let cert = load_certs(&cert).map_err(|e| format!("bad cert {:?}: {}", cert, e))?;
+    let priv_key = load_key(&priv_key).map_err(|e| format!("bad privkey {:?}: {}", priv_key, e))?;
 
     let mut config = rustls::ServerConfig::builder()
         .with_safe_defaults()
@@ -304,8 +297,6 @@ fn load_certs(path: &Path) -> io::Result<Vec<rustls::Certificate>> {
 }
 
 fn load_key(path: &Path) -> io::Result<rustls::PrivateKey> {
-    eprintln!("DEBUG path {:?}", path);
-
     let keyfile = fs::File::open(path)?;
     let mut reader = io::BufReader::new(keyfile);
 

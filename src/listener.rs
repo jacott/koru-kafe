@@ -3,6 +3,7 @@ use hyper::header::HOST;
 use hyper::server::conn::Http;
 use hyper::service::service_fn;
 use hyper::{Body, Request, Response};
+use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -43,8 +44,11 @@ fn with_domain<T>(req: &Request<T>, domains: &DomainMap) -> crate::Result<Arc<Do
 }
 
 pub async fn listen(addr: String, domains: DomainMap) -> crate::Result<()> {
-    let listener = TcpListener::bind(&addr).await?;
-    println!("Server started, listening on {}", addr);
+    let listener = TcpListener::bind(&addr)
+        .await
+        .map_err(|e| io::Error::new(e.kind(), format!("listen on {} failed - {}", addr, e)))
+        .unwrap();
+
     let domains = Arc::new(domains);
     loop {
         let (stream, _) = listener.accept().await?;
@@ -68,8 +72,10 @@ pub async fn listen(addr: String, domains: DomainMap) -> crate::Result<()> {
 }
 
 pub async fn tls_listen(addr: String, domains: DomainMap) -> crate::Result<()> {
-    let listener = TcpListener::bind(&addr).await?;
-    println!("Server started, listening on {}", addr);
+    let listener = TcpListener::bind(&addr)
+        .await
+        .map_err(|e| io::Error::new(e.kind(), format!("listen on {} failed - {}", addr, e)))
+        .unwrap();
     let domains = Arc::new(domains);
     loop {
         let (stream, _) = listener.accept().await?;
