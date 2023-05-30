@@ -4,7 +4,7 @@ use radix_trie::Trie;
 use std::{collections::HashMap, error::Error, fmt::Display, net::IpAddr, sync::Arc};
 use tokio_rustls::rustls;
 
-use crate::koru_proxy;
+use crate::{koru_proxy, static_files};
 
 pub type DynLocation = dyn Location + Send + Sync;
 pub type RcDynLocation = Arc<DynLocation>;
@@ -76,6 +76,19 @@ impl Location for Rewrite {
             None => Err(format!("Can't find {}", self.path).into()),
             Some(l) => Ok(Some(l.clone())),
         }
+    }
+}
+
+pub struct File {
+    pub root: String,
+}
+
+#[async_trait]
+impl Location for File {
+    async fn connect(&self, req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
+        eprintln!("DEBUG self.root {:?}", self.root);
+
+        static_files::send_file(req, &self.root).await
     }
 }
 

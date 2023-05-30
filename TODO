@@ -1,8 +1,9 @@
 * MVP
-** turn errors into net::Response
-** add static_files
+** TODO [#A] add static_files
 include headers: modified, etag
-static compression: gzip, br
+DONE static compression: gzip, br
+** turn errors into net::Response
+** Fix the forward header (https://www.nginx.com/resources/wiki/start/topics/examples/forwarded/)
 ** unit tests
 ** integration tests (https://github.com/tokio-rs/turmoil)
 

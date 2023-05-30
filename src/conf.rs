@@ -6,11 +6,11 @@ use std::{
     collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, RwLock},
 };
 use std::{error::Error, fmt};
 use tokio_rustls::rustls;
-use yaml_rust::{Yaml, YamlLoader};
+use yaml_rust::{yaml, Yaml, YamlLoader};
 
 pub type ListernerMap = HashMap<String, domain::DomainMap>;
 
@@ -39,6 +39,18 @@ impl Default for Listener {
             port: "8080".to_string(),
             domains: vec![Default::default()],
         }
+    }
+}
+
+fn yaml_get_string(h: &yaml::Hash, field: &str) -> Result<String, String> {
+    if let Some(v) = h.get(&Yaml::String(field.to_string())) {
+        if let Some(v) = v.as_str() {
+            Ok(v.to_string())
+        } else {
+            Err(format!("field {} not a string", field))
+        }
+    } else {
+        Err(format!("Missing field {}", field))
     }
 }
 
@@ -95,6 +107,18 @@ impl LocationBuilder for RewriteBuilder {
     }
 }
 
+struct FileBuilder;
+impl LocationBuilder for FileBuilder {
+    fn yaml_to_location(&self, _domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
+        match yaml.as_hash() {
+            Some(h) => Ok(Arc::new(domain::File {
+                root: yaml_get_string(h, "root")?,
+            })),
+            None => Err("Invalid file rule; expected string".to_string()),
+        }
+    }
+}
+
 struct HttpProxyBuilder;
 impl LocationBuilder for HttpProxyBuilder {
     fn yaml_to_location(&self, domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
@@ -126,15 +150,15 @@ impl LocationBuilder for WebsocketProxyBuilder {
 }
 
 pub struct LocationBuilders {
-    map: Mutex<HashMap<String, Arc<DynLocationBuilder>>>,
+    map: RwLock<HashMap<String, Arc<DynLocationBuilder>>>,
 }
 impl LocationBuilders {
     pub fn add(name: &str, builder: Arc<DynLocationBuilder>) {
-        LOCATION_BUILDERS.map.lock().unwrap().insert(name.to_string(), builder);
+        LOCATION_BUILDERS.map.write().unwrap().insert(name.to_string(), builder);
     }
 
     pub fn get(name: &str) -> Option<Arc<DynLocationBuilder>> {
-        LOCATION_BUILDERS.map.lock().unwrap().get(name).cloned()
+        LOCATION_BUILDERS.map.read().unwrap().get(name).cloned()
     }
 }
 
@@ -142,9 +166,10 @@ lazy_static! {
     static ref LOCATION_BUILDERS: LocationBuilders = {
         let mut m: HashMap<String, Arc<DynLocationBuilder>> = HashMap::new();
         m.insert("rewrite".to_string(), Arc::new(RewriteBuilder));
+        m.insert("file".to_string(), Arc::new(FileBuilder));
         m.insert("http_proxy".to_string(), Arc::new(HttpProxyBuilder));
         m.insert("websocket_proxy".to_string(), Arc::new(WebsocketProxyBuilder));
-        LocationBuilders { map: Mutex::new(m) }
+        LocationBuilders { map: RwLock::new(m) }
     };
 }
 
@@ -366,16 +391,16 @@ fn load_key(path: &Path) -> io::Result<rustls::PrivateKey> {
     ))
 }
 
-#[cfg(test)]
-mod tests {
-    // use super::*;
+// #[cfg(test)]
+// mod tests {
+//     // use super::*;
 
-    #[test]
-    fn expr() {
-        let s = "1234*";
-        assert_eq!(format!("slice {:?}", s.strip_suffix('*')), "FIXME");
-    }
-}
+//     #[test]
+//     fn expr() {
+//         let s = "1234*";
+//         assert_eq!(format!("slice {:?}", s.strip_suffix('*')), "FIXME");
+//     }
+//
 //     #[tokio::test]
 //     async fn yaml() -> crate::Result<()> {
 //         spawn_listeners().await?;
