@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use hyper::{Body, Request, Response};
 use radix_trie::Trie;
-use std::{collections::HashMap, error::Error, fmt::Display, net::IpAddr, sync::Arc};
+use std::{collections::HashMap, error::Error, fmt::Display, io, net::IpAddr, sync::Arc};
 use tokio_rustls::rustls;
 
 use crate::{koru_proxy, static_files};
@@ -26,6 +26,42 @@ impl Domain {
             .get(path)
             .or_else(|| self.location_prefixes.get_ancestor_value(path))
             .cloned()
+    }
+
+    pub fn handle_error(&self, err: crate::Error) -> crate::Result<Response<Body>> {
+        if let Some(e) = err.downcast_ref::<hyper::Error>() {
+            if e.is_user() {
+                return self.client_error(400);
+            }
+            if e.is_connect() {
+                return self.server_error(502, e.to_string());
+            }
+            return self.server_error(500, e.to_string());
+        }
+
+        if let Some(e) = err.downcast_ref::<io::Error>() {
+            return match e.kind() {
+                io::ErrorKind::PermissionDenied | io::ErrorKind::NotFound => self.client_error(400),
+                io::ErrorKind::ConnectionRefused => self.server_error(502, e.to_string()),
+                _ => self.server_error(500, e.to_string()),
+            };
+        }
+
+        self.server_error(500, err.to_string())
+    }
+
+    pub fn client_error(&self, code: u16) -> crate::Result<Response<Body>> {
+        Ok(Response::builder()
+            .status(code)
+            .body(format!("{} Client error\n", code).into())?)
+    }
+
+    pub fn server_error(&self, code: u16, message: String) -> crate::Result<Response<Body>> {
+        eprintln!("{} {}", code, message);
+
+        Ok(Response::builder()
+            .status(code)
+            .body(format!("{} Server error\n{}\n", code, message).into())?)
     }
 }
 

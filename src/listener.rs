@@ -15,13 +15,20 @@ async fn handler(req: Request<Body>, ip_addr: IpAddr, domain: Option<Arc<Domain>
     if let Some(domain) = domain {
         match domain.find_location(path) {
             None => Err(format!("Unhandled path: {}", path).into()),
-            Some(loc) => {
-                let loc = match loc.convert(&domain, &req, &ip_addr)? {
-                    None => loc,
-                    Some(loc) => loc,
-                };
-                loc.connect(req, ip_addr).await
-            }
+            Some(loc) => match loc.convert(&domain, &req, &ip_addr) {
+                Ok(nl) => {
+                    let loc = match nl {
+                        None => loc,
+                        Some(loc) => loc,
+                    };
+
+                    match loc.connect(req, ip_addr).await {
+                        Ok(resp) => Ok(resp),
+                        Err(err) => domain.handle_error(err),
+                    }
+                }
+                Err(err) => domain.handle_error(err),
+            },
         }
     } else {
         eprintln!("{} 404", &path);
@@ -72,7 +79,16 @@ pub async fn listen(addr: String, domains: DomainMap) -> crate::Result<()> {
                 )
                 .with_upgrades();
             if let Err(e) = conn_fut.await {
-                println!("An error occurred: {:?}", e);
+                if let Some(e) = e.into_cause() {
+                    if let Ok(e) = e.downcast::<io::Error>() {
+                        match e.kind() {
+                            io::ErrorKind::UnexpectedEof => {}
+                            _ => {
+                                eprintln!("An error occurred: {:?}", e);
+                            }
+                        }
+                    }
+                }
             }
         });
     }
