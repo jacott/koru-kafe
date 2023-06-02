@@ -1,55 +1,91 @@
-use hyper::{
-    header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_TYPE},
-    Body, Request, Response,
+use httpdate::HttpDate;
+use hyper::{header, http::HeaderValue, Body, Method, Request, Response};
+use std::{
+    io,
+    time::{Duration, SystemTime},
 };
-use std::io;
 use tokio::fs;
 
 pub async fn send_file(req: Request<Body>, root: &str) -> crate::Result<Response<Body>> {
     let url_path = req.uri().path();
-    if !(url_path.contains('\\') || url_path.ends_with("/..") || url_path.contains("/../")) {
-        let headers = req.headers();
-        let mut path = root.to_string();
-        path += url_path;
-        let len = path.len();
+    if url_path.contains('\\') || url_path.ends_with("/..") || url_path.contains("/../") {
+        return Ok(Response::builder().status(400).body(Body::from("Bad Request\n"))?);
+    }
 
-        let mime_type = mime_guess::from_path(&path).first_or_text_plain().to_string();
+    let headers = req.headers();
+    let mut path = root.to_string();
+    path += url_path;
+    let len = path.len();
 
-        let encodings = if let Some(v) = headers.get(ACCEPT_ENCODING) { v.as_bytes() } else { b"" };
+    let mime_type = mime_guess::from_path(&path).first_or_text_plain().to_string();
 
-        for enc in ENCODINGS.iter() {
-            let unencryped = enc.is_empty();
-            let prefix;
+    let encodings = if let Some(v) = headers.get(header::ACCEPT_ENCODING) { v.as_bytes() } else { b"" };
+
+    let if_modified_since = read_time(&headers.get(header::IF_MODIFIED_SINCE));
+
+    for enc in ENCODINGS.iter() {
+        path.truncate(len);
+
+        let unencryped = enc.is_empty();
+        let prefix;
+        if !unencryped {
+            if !can_compress(enc, encodings) {
+                continue;
+            }
+
+            prefix = std::str::from_utf8(enc).unwrap();
+            path += ".";
+            path += prefix;
+        } else {
+            prefix = ""
+        }
+        if let Ok(md) = fs::metadata(&path).await {
+            let last_modified = round_time_secs(md.modified().unwrap());
+
+            let mut rb = Response::builder()
+                .header(header::CONTENT_TYPE, &mime_type)
+                .header(header::LAST_MODIFIED, HttpDate::from(last_modified).to_string());
             if !unencryped {
-                if !can_compress(enc, encodings) {
-                    continue;
+                rb = rb.header(header::CONTENT_ENCODING, prefix.to_string())
+            }
+
+            if let Some(if_modified_since) = if_modified_since {
+                if if_modified_since == last_modified {
+                    return Ok(rb.status(304).body(Body::empty())?);
                 }
-                prefix = std::str::from_utf8(enc).unwrap();
-                path += ".";
-                path += prefix;
-            } else {
-                prefix = ""
+            }
+
+            if req.method() == Method::HEAD {
+                return Ok(rb.status(200).body(Body::empty())?);
             }
             match fs::read(&path).await {
                 Ok(body) => {
-                    let mut rb = Response::builder().status(200).header(CONTENT_TYPE, mime_type);
-                    if !unencryped {
-                        rb = rb.header(CONTENT_ENCODING, prefix.to_string());
-                    }
-
-                    return Ok(rb.body(Body::from(body))?);
+                    return Ok(rb.status(200).body(Body::from(body))?);
                 }
                 Err(err) => match err.kind() {
                     io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied => {}
                     _ => return Ok(Response::builder().status(500).body(Body::from(err.to_string()))?),
                 },
             }
-            path.truncate(len);
         }
     }
 
-    eprintln!("{} 404", url_path);
-    Ok(Response::builder().status(404).body(Body::from("Not found\n"))?)
+    eprintln!("{} 404", &url_path);
+    Ok(Response::builder().status(404).body(Body::from("Not Found\n"))?)
+}
+
+fn round_time_secs(time: SystemTime) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::new(time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(), 0)
+}
+
+fn read_time(value: &Option<&HeaderValue>) -> Option<SystemTime> {
+    if let Some(value) = value {
+        std::str::from_utf8(value.as_bytes())
+            .ok()
+            .and_then(|value| httpdate::parse_http_date(value).ok())
+    } else {
+        None
+    }
 }
 
 fn can_compress(enc: &[u8], encodings: &[u8]) -> bool {
