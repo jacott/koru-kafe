@@ -6,14 +6,20 @@ use std::{
 };
 use tokio::fs;
 
-pub async fn send_file(req: Request<Body>, root: &str) -> crate::Result<Response<Body>> {
+#[derive(Debug)]
+pub struct Opts {
+    pub root: String,
+    pub cache_control: String,
+}
+
+pub async fn send_file(req: Request<Body>, opts: &Opts) -> crate::Result<Response<Body>> {
     let url_path = req.uri().path();
     if url_path.contains('\\') || url_path.ends_with("/..") || url_path.contains("/../") {
         return Ok(Response::builder().status(400).body(Body::from("Bad Request\n"))?);
     }
 
     let headers = req.headers();
-    let mut path = root.to_string();
+    let mut path = opts.root.to_string();
     path += url_path;
     let len = path.len();
 
@@ -44,7 +50,8 @@ pub async fn send_file(req: Request<Body>, root: &str) -> crate::Result<Response
 
             let mut rb = Response::builder()
                 .header(header::CONTENT_TYPE, &mime_type)
-                .header(header::LAST_MODIFIED, HttpDate::from(last_modified).to_string());
+                .header(header::LAST_MODIFIED, HttpDate::from(last_modified).to_string())
+                .header(header::CACHE_CONTROL, &opts.cache_control);
             if !unencryped {
                 rb = rb.header(header::CONTENT_ENCODING, prefix.to_string())
             }
@@ -58,6 +65,7 @@ pub async fn send_file(req: Request<Body>, root: &str) -> crate::Result<Response
             if req.method() == Method::HEAD {
                 return Ok(rb.status(200).body(Body::empty())?);
             }
+
             match fs::read(&path).await {
                 Ok(body) => {
                     return Ok(rb.status(200).body(Body::from(body))?);
@@ -193,5 +201,23 @@ mod tests {
         assert!(can_compress(b"br", b""));
         assert!(can_compress(b"br", b"abc,gzip,*"));
         assert!(can_compress(b"br", b"abc,gzip,*;q=0.1"));
+    }
+
+    #[tokio::test]
+    async fn send_file_cached() -> crate::Result<()> {
+        let opts = Opts {
+            root: "tests/assets".to_string(),
+            cache_control: "max-age=2000".to_string(),
+        };
+
+        let req = Request::builder().uri("/hello.txt").body(Body::empty()).unwrap();
+
+        let res = super::send_file(req, &opts).await.unwrap();
+
+        assert_eq!(res.status().as_u16(), 200);
+        assert_eq!(res.headers().get(header::CONTENT_ENCODING).unwrap(), "br");
+        assert_eq!(res.headers().get(header::CACHE_CONTROL).unwrap(), "max-age=2000");
+
+        Ok(())
     }
 }

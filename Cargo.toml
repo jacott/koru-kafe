@@ -20,7 +20,7 @@ radix_trie = "0.2.1"
 regex = "1.8.3"
 lazy_static = "1.4.0"
 async-trait = "0.1.68"
-tokio-rustls = {path = "/u/github/tls/tokio-rustls"}
+tokio-rustls = "0.24.0"
 rustls-pemfile = "1.0.2"
 env_logger = "0.10.0"
 log = "0.4.18"

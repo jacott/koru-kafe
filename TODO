@@ -1,9 +1,10 @@
 * MVP
-** TODO [#A] add static_files
-*** TODO handle headers: if-unmodified, if-modified✔️
+** DONE add static_files
+*** DONE handle headers: if-modified
 *** DONE static compression: gzip, br
 *** DONE HEAD method
-** DONE turn errors into net::Response
+*** DONE turn errors into net::Response
+
 ** Fix the forward header (https://www.nginx.com/resources/wiki/start/topics/examples/forwarded/)
 ** unit tests
 ** integration tests (https://github.com/tokio-rs/turmoil)

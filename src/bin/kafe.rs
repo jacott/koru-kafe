@@ -2,7 +2,7 @@ use koru_kafe::{conf, listener, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (tls_map, psl_map) = conf::load()?;
+    let (tls_map, psl_map, _service_map) = conf::load()?;
     let mut handles = Vec::with_capacity(psl_map.len());
 
     for (addr, domains) in tls_map {

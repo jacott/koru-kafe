@@ -1,21 +1,24 @@
 use async_trait::async_trait;
-use hyper::{Body, Request, Response};
+use hyper::{http::uri::PathAndQuery, Body, Request, Response, Uri};
 use radix_trie::Trie;
-use std::{collections::HashMap, error::Error, fmt::Display, io, net::IpAddr, sync::Arc};
+use std::{collections::HashMap, error::Error, fmt::Display, io, net::IpAddr, str::FromStr, sync::Arc};
 use tokio_rustls::rustls;
 
-use crate::{koru_proxy, static_files};
+use crate::{koru_service, static_files};
 
 pub type DynLocation = dyn Location + Send + Sync;
 pub type RcDynLocation = Arc<DynLocation>;
 pub type DomainMap = HashMap<String, Arc<Domain>>;
+pub type ServiceMap = HashMap<String, Arc<koru_service::Service>>;
 
 #[derive(Default)]
 pub struct Domain {
     pub root: String,
+    pub name: String,
+    pub aliases: Vec<String>,
     pub cert_path: String,
     pub tls_config: Option<Arc<rustls::ServerConfig>>,
-    pub proxies: HashMap<String, ProxyConf>,
+    pub services: ServiceMap,
     pub locations: HashMap<String, RcDynLocation>,
     pub location_prefixes: Trie<String, RcDynLocation>,
 }
@@ -65,10 +68,6 @@ impl Domain {
     }
 }
 
-pub struct ProxyConf {
-    pub server_socket: String,
-}
-
 #[derive(Debug)]
 pub struct NoConnect;
 
@@ -85,7 +84,7 @@ pub trait Location {
     fn convert(
         &self,
         _domain: &Domain,
-        _req: &Request<Body>,
+        _req: &mut Request<Body>,
         _ip_addr: &IpAddr,
     ) -> crate::Result<Option<RcDynLocation>> {
         Ok(None)
@@ -94,8 +93,19 @@ pub trait Location {
     async fn connect(&self, _req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
         Err(Box::new(NoConnect))
     }
+
+    fn info(&self) -> String {
+        "Location".to_string()
+    }
 }
 
+impl core::fmt::Debug for dyn Location + Send + Sync {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.info())
+    }
+}
+
+#[derive(Debug)]
 pub struct Rewrite {
     pub path: String,
 }
@@ -105,9 +115,18 @@ impl Location for Rewrite {
     fn convert(
         &self,
         domain: &Domain,
-        _req: &Request<Body>,
+        req: &mut Request<Body>,
         _ip_addr: &IpAddr,
     ) -> crate::Result<Option<RcDynLocation>> {
+        let mut parts = req.uri().clone().into_parts();
+
+        if let Some(query) = req.uri().query() {
+            parts.path_and_query = Some(PathAndQuery::from_str(&format!("{}?{}", &self.path, query))?);
+        } else {
+            parts.path_and_query = Some(PathAndQuery::from_str(self.path.as_str())?);
+        }
+        *req.uri_mut() = Uri::from_parts(parts)?;
+
         match domain.find_location(&self.path) {
             None => Err(format!("Can't find {}", self.path).into()),
             Some(l) => Ok(Some(l.clone())),
@@ -115,19 +134,19 @@ impl Location for Rewrite {
     }
 }
 
+#[derive(Debug)]
 pub struct File {
-    pub root: String,
+    pub opts: static_files::Opts,
 }
 
 #[async_trait]
 impl Location for File {
     async fn connect(&self, req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
-        eprintln!("DEBUG self.root {:?}", self.root);
-
-        static_files::send_file(req, &self.root).await
+        static_files::send_file(req, &self.opts).await
     }
 }
 
+#[derive(Debug)]
 pub struct HttpProxy {
     pub server_socket: String,
 }
@@ -135,10 +154,11 @@ pub struct HttpProxy {
 #[async_trait]
 impl Location for HttpProxy {
     async fn connect(&self, req: Request<Body>, ip_addr: IpAddr) -> crate::Result<Response<Body>> {
-        koru_proxy::pass(req, ip_addr, &self.server_socket).await
+        koru_service::pass(req, ip_addr, &self.server_socket).await
     }
 }
 
+#[derive(Debug)]
 pub struct WebsocketProxy {
     pub server_socket: String,
 }
@@ -148,13 +168,21 @@ impl Location for WebsocketProxy {
     async fn connect(&self, mut req: Request<Body>, ip_addr: IpAddr) -> crate::Result<Response<Body>> {
         let (response, fut) = fastwebsockets::upgrade::upgrade(&mut req)?;
 
+        let server_socket = self.server_socket.clone();
+
         tokio::task::spawn(async move {
-            if let Err(e) = tokio::task::unconstrained(koru_proxy::websocket(fut, req, ip_addr)).await {
+            if let Err(e) =
+                tokio::task::unconstrained(koru_service::websocket(fut, req, &ip_addr, &server_socket)).await
+            {
                 eprintln!("Error in websocket connection: {}", e);
             }
         });
 
         Ok(response)
+    }
+
+    fn info(&self) -> String {
+        format!("WebsocketProxy {}", self.server_socket)
     }
 }
 

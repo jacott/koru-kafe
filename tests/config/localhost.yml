@@ -1,0 +1,14 @@
+listeners: [localhost:8080]
+root: app/localhost
+
+services:
+  app:
+    server_socket: localhost:3000
+    cmd: [my-test-cmd, ../cmd-name, arg1, arg2]
+
+locations:
+  /: {rewrite: /index.html}
+  /*: {http_proxy: app}
+  /tmp/*: {file: {root: /home/geoffj}}
+  /favicon.ico: {file: {root: /home/geoffj/src/training-sims/app}}
+  /{rc,ws/*}: {websocket_proxy: app}

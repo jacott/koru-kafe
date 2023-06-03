@@ -10,12 +10,16 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio_rustls::{rustls, LazyConfigAcceptor};
 
-async fn handler(req: Request<Body>, ip_addr: IpAddr, domain: Option<Arc<Domain>>) -> crate::Result<Response<Body>> {
+async fn handler(
+    mut req: Request<Body>,
+    ip_addr: IpAddr,
+    domain: Option<Arc<Domain>>,
+) -> crate::Result<Response<Body>> {
     let path = req.uri().path();
     if let Some(domain) = domain {
         match domain.find_location(path) {
             None => Err(format!("Unhandled path: {}", path).into()),
-            Some(loc) => match loc.convert(&domain, &req, &ip_addr) {
+            Some(loc) => match loc.convert(&domain, &mut req, &ip_addr) {
                 Ok(nl) => {
                     let loc = match nl {
                         None => loc,

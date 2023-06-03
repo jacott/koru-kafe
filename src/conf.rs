@@ -1,10 +1,15 @@
-use crate::domain::{self, Domain, DynLocation};
+use crate::{
+    domain::{self, Domain, DynLocation},
+    koru_service,
+    location_path::expand_path,
+    static_files,
+};
 use directories::ProjectDirs;
 use lazy_static::lazy_static;
 use serde_derive::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    fs, io,
+    env, fs, io,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
@@ -42,17 +47,25 @@ impl Default for Listener {
     }
 }
 
-fn yaml_get_string(h: &yaml::Hash, field: &str) -> Result<String, String> {
+fn yaml_get_opt_string(h: &yaml::Hash, field: &str) -> Result<Option<String>, String> {
     if let Some(v) = h.get(&Yaml::String(field.to_string())) {
         if let Some(v) = v.as_str() {
-            Ok(v.to_string())
+            Ok(Some(v.to_string()))
         } else {
             Err(format!("field {} not a string", field))
         }
     } else {
-        Err(format!("Missing field {}", field))
+        Ok(None)
     }
 }
+
+// fn yaml_get_string(h: &yaml::Hash, field: &str) -> Result<String, String> {
+//     if let Some(v) = yaml_get_opt_string(h, field)? {
+//         Ok(v)
+//     } else {
+//         Err(format!("Missing field {}", field))
+//     }
+// }
 
 #[derive(Clone, PartialEq, Debug, Eq)]
 pub struct ConfError {
@@ -109,11 +122,15 @@ impl LocationBuilder for RewriteBuilder {
 
 struct FileBuilder;
 impl LocationBuilder for FileBuilder {
-    fn yaml_to_location(&self, _domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
+    fn yaml_to_location(&self, domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
         match yaml.as_hash() {
-            Some(h) => Ok(Arc::new(domain::File {
-                root: yaml_get_string(h, "root")?,
-            })),
+            Some(h) => {
+                let opts = static_files::Opts {
+                    root: yaml_get_opt_string(h, "root")?.unwrap_or_else(|| domain.root.clone()),
+                    cache_control: yaml_get_opt_string(h, "cache_control")?.unwrap_or_else(|| "no-cache".to_string()),
+                };
+                Ok(Arc::new(domain::File { opts }))
+            }
             None => Err("Invalid file rule; expected string".to_string()),
         }
     }
@@ -123,7 +140,7 @@ struct HttpProxyBuilder;
 impl LocationBuilder for HttpProxyBuilder {
     fn yaml_to_location(&self, domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
         match yaml.as_str() {
-            Some(s) => match domain.proxies.get(&s.to_string()) {
+            Some(s) => match domain.services.get(&s.to_string()) {
                 Some(proxy) => Ok(Arc::new(domain::HttpProxy {
                     server_socket: proxy.server_socket.clone(),
                 })),
@@ -138,7 +155,7 @@ struct WebsocketProxyBuilder;
 impl LocationBuilder for WebsocketProxyBuilder {
     fn yaml_to_location(&self, domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
         match yaml.as_str() {
-            Some(s) => match domain.proxies.get(&s.to_string()) {
+            Some(s) => match domain.services.get(&s.to_string()) {
                 Some(proxy) => Ok(Arc::new(domain::WebsocketProxy {
                     server_socket: proxy.server_socket.clone(),
                 })),
@@ -173,8 +190,7 @@ lazy_static! {
     };
 }
 
-fn load_domain(path: &Path) -> Result<(Vec<String>, Domain, String), ConfError> {
-    eprintln!("entry {:?}", path);
+fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
     let cfg = convert_err(path, fs::read_to_string(path))?;
     let docs = convert_err(path, YamlLoader::load_from_str(&cfg))?;
     let cerr = |field, i| ConfError::new(path, field, i);
@@ -218,14 +234,16 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain, String), ConfError> 
         domain.root = opt_field("root")?;
         domain.cert_path = opt_field("cert_path")?;
 
-        let field = &"proxies";
+        let field = &"services";
         if let Some(paths) = get_field(field)?.as_hash() {
             for (k, v) in paths {
                 let k = k.as_str().unwrap_or("");
                 if v.as_hash().is_none() {
-                    return Err(cerr(field, &format!("Invalid value {:?}", v)));
+                    return Err(cerr(field, &format!("Invalid services value {:?}", v)));
                 }
-                domain.proxies.insert(k.to_string(), load_proxy(path, k, v)?);
+                domain
+                    .services
+                    .insert(k.to_string(), Arc::new(load_services(path, k, v)?));
             }
         }
 
@@ -239,41 +257,116 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain, String), ConfError> 
                 if v.as_hash().is_none() {
                     return Err(cerr(field, &format!("Invalid value {:?}", v)));
                 }
-                if k.ends_with('*') {
-                    let ks = k.strip_suffix('*').unwrap();
-                    domain
-                        .location_prefixes
-                        .insert(ks.to_string(), load_location(&domain, path, k, v)?);
-                } else {
-                    domain
-                        .locations
-                        .insert(k.to_string(), load_location(&domain, path, k, v)?);
+                let loc = load_location(&domain, path, k, v)?;
+                for k in expand_path(k) {
+                    if k.ends_with('*') {
+                        let ks = k.strip_suffix('*').unwrap();
+
+                        domain.location_prefixes.insert(ks.to_string(), loc.clone());
+                    } else {
+                        domain.locations.insert(k.to_string(), loc.clone());
+                    }
                 }
             }
         }
-        let mut name = path.file_name().unwrap().to_string_lossy().to_string();
-        name.truncate(name.len() - 4);
-        Ok((listeners, domain, name))
+        let field = &"name";
+        if let Some(name) = map.get(&Yaml::String(field.to_string())).and_then(|v| v.as_str()) {
+            domain.name = name.to_string();
+        } else {
+            let mut name = path.file_name().unwrap().to_string_lossy().to_string();
+            name.truncate(name.len() - 4);
+            domain.name = name;
+        }
+
+        let field = &"aliases";
+        if let Some(aliases) = map
+            .get(&Yaml::String(field.to_string()))
+            .and_then(|v| v.as_vec().and_then(|v| to_env_string_list(v)))
+        {
+            domain.aliases = aliases;
+        }
+
+        Ok((listeners, domain))
     } else {
         Err(cerr("", "Expected hash"))
     }
 }
 
-fn load_proxy(path: &Path, k: &str, v: &Yaml) -> Result<domain::ProxyConf, ConfError> {
+fn load_services(path: &Path, k: &str, v: &Yaml) -> Result<koru_service::Service, ConfError> {
+    let mut service: koru_service::Service = Default::default();
     if let Some(v) = v.as_hash() {
-        let mut iter = v.iter();
-        if let Some(t) = iter.next() {
-            if iter.next().is_none() && t.0.as_str().unwrap_or("") == "server_socket" {
-                if let Some(t) = t.1.as_str() {
-                    return Ok(domain::ProxyConf {
-                        server_socket: t.to_string(),
-                    });
+        for (sk, sv) in v {
+            let sk = sk.as_str().unwrap_or("");
+            match sk {
+                "server_socket" => {
+                    if let Some(v) = sv.as_str() {
+                        service.server_socket = v.to_string();
+                        continue;
+                    }
                 }
+                "cmd" => {
+                    if let Some(mut v) = sv.as_vec().and_then(|v| to_env_string_list(v)) {
+                        if v.len() > 1 {
+                            let mut iter = v.drain(..);
+                            service.cmd = Some((iter.next().unwrap(), iter.next().unwrap(), iter.collect()));
+                            continue;
+                        }
+                    }
+                }
+                _ => (),
             }
+            return Err(ConfError::new(
+                path,
+                k,
+                &format!("Invalid service field {:?}!\n{:?}", sk, v),
+            ));
         }
     }
 
-    Err(ConfError::new(path, k, &format!("Invalid value {:?}", v)))
+    Ok(service)
+}
+
+fn to_env_string_list(v: &[Yaml]) -> Option<Vec<String>> {
+    let ans: Result<Vec<String>, ()> = v
+        .iter()
+        .map(|v| match v {
+            Yaml::String(v) => {
+                let v = v.to_string();
+                let mut prev = 0;
+                let mut result = String::new();
+                for (i, matched) in v.match_indices(|c| matches!(c, '$' | '}')) {
+                    match matched {
+                        "$" => {
+                            result += &v[prev..i];
+                            prev = i;
+                        }
+                        _ => {
+                            let var = &v[prev..i + 1];
+                            if prev + 1 < i && &var[0..2] == "${" {
+                                let name = &var[2..var.len() - 1];
+                                match env::var(name) {
+                                    Ok(v) => {
+                                        result += v.as_str();
+                                    }
+                                    Err(_) => {
+                                        result += var;
+                                    }
+                                }
+                            } else {
+                                result += var;
+                            }
+                            prev = i + 1;
+                        }
+                    }
+                }
+                result += &v[prev..];
+                Ok(result)
+            }
+            Yaml::Integer(_) => Ok(v.as_i64().ok_or(())?.to_string()),
+            _ => Err(()),
+        })
+        .collect();
+    ans.ok()
 }
 
 fn load_location(domain: &Domain, path: &Path, k: &str, v: &Yaml) -> Result<Arc<DynLocation>, ConfError> {
@@ -295,15 +388,20 @@ fn load_location(domain: &Domain, path: &Path, k: &str, v: &Yaml) -> Result<Arc<
     Err(ConfError::new(path, k, &format!("Invalid value {:?}", v)))
 }
 
-pub fn load() -> Result<(ListernerMap, ListernerMap), ConfError> {
+pub fn load() -> Result<(ListernerMap, ListernerMap, domain::ServiceMap), ConfError> {
     let pdir = ProjectDirs::from("", "", "koru-kafe");
     if pdir.is_none() {
         return Err(ConfError::new(&PathBuf::new(), "???", "Can't find config dir"));
     }
     let pdir = pdir.unwrap();
     let cdir = pdir.config_dir();
+    load_from(cdir)
+}
+
+pub fn load_from(cdir: &Path) -> Result<(ListernerMap, ListernerMap, domain::ServiceMap), ConfError> {
     let mut tls_map = HashMap::new(); // TLS encrypted socket listener
     let mut psl_map = HashMap::new(); // unencrypted socket listener
+    let mut service_map = HashMap::new();
     let mut tls_config_map: HashMap<String, Arc<rustls::ServerConfig>> = HashMap::new();
 
     for entry in convert_err(cdir, fs::read_dir(cdir))?.filter_map(|entry| {
@@ -317,7 +415,19 @@ pub fn load() -> Result<(ListernerMap, ListernerMap), ConfError> {
             })
         })
     }) {
-        let (listeners, mut domain, domain_name) = load_domain(&entry.path())?;
+        let (listeners, mut domain) = load_domain(&entry.path())?;
+
+        for (name, service) in domain.services.iter() {
+            if let Some(cmd) = service.cmd_name() {
+                if service_map.insert(cmd.to_string(), service.clone()).is_some() {
+                    return Err(ConfError::new(
+                        &entry.path(),
+                        name,
+                        &format!("Duplicate service app {}", cmd),
+                    ));
+                }
+            }
+        }
 
         if !domain.cert_path.is_empty() {
             if let Some(config) = tls_config_map.get(&domain.cert_path) {
@@ -336,10 +446,13 @@ pub fn load() -> Result<(ListernerMap, ListernerMap), ConfError> {
             } else {
                 tls_map.entry(l).or_insert(HashMap::new())
             };
-            entry.insert(domain_name.to_string(), domain.clone());
+            entry.insert(domain.name.to_string(), domain.clone());
+            for name in &domain.aliases {
+                entry.insert(name.to_string(), domain.clone());
+            }
         }
     }
-    Ok((tls_map, psl_map))
+    Ok((tls_map, psl_map, service_map))
 }
 
 fn set_cert(domain: &mut Domain) -> Result<Arc<rustls::ServerConfig>, String> {
@@ -391,47 +504,59 @@ fn load_key(path: &Path) -> io::Result<rustls::PrivateKey> {
     ))
 }
 
-// #[cfg(test)]
-// mod tests {
-//     // use super::*;
+#[cfg(test)]
+mod tests {
+    // use super::*;
 
-//     #[test]
-//     fn expr() {
-//         let s = "1234*";
-//         assert_eq!(format!("slice {:?}", s.strip_suffix('*')), "FIXME");
-//     }
-//
-//     #[tokio::test]
-//     async fn yaml() -> crate::Result<()> {
-//         spawn_listeners().await?;
-//         Ok(())
-//     }
-//     //     #[test]
-//     //     fn default() -> crate::Result<()> {
-//     //         let cfg: Conf = Default::default();
+    use std::path::Path;
 
-//     //         let out = toml::to_string_pretty(&cfg)?;
-//     //         eprintln!("{}", out);
-//     //         assert_eq!(
-//     //             out,
-//     //             r###"[[listeners]]
-//     // host = "127.0.0.1"
-//     // port = "8080"
+    fn s(v: &str) -> String {
+        v.to_string()
+    }
 
-//     // [[listeners.domains]]
-//     // name = "localhost"
-//     // root = "app/localhost"
+    #[test]
+    fn load_from() -> crate::Result<()> {
+        let (ca, cb, _) = super::load_from(Path::new("tests/config"))?;
+        assert_eq!(ca.len(), 0);
+        assert_eq!(cb.len(), 1);
+        let (n, ds) = cb.iter().next().unwrap();
+        assert_eq!(n, "localhost:8080");
 
-//     // [listeners.domains.proxies.proxy]
-//     // host_addr = "localhost:3000"
+        let (n, d) = ds.iter().next().unwrap();
+        assert_eq!(n, "localhost");
+        let (n, service) = d.services.iter().next().unwrap();
+        assert_eq!(n, "app");
+        assert_eq!(
+            service.cmd,
+            Some((s("my-test-cmd"), s("../cmd-name"), vec![s("arg1"), s("arg2")]))
+        );
+        assert_eq!(service.server_socket, "localhost:3000");
 
-//     // [listeners.domains.locations]
+        let v1 = d.location_prefixes.get_ancestor_value("/ws/123").unwrap();
+        let v2 = d.locations.get("/rc").unwrap();
 
-//     // [listeners.domains.location_prefixes."/"]
-//     // Proxy = "proxy"
-//     // "###
-//     //             .to_string()
-//     //         );
-//     //         Ok(())
-//     //     }
-// }
+        assert_eq!(format!("{v1:?}"), format!("{v2:?}"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn to_arg_list() -> crate::Result<()> {
+        let yaml =
+            yaml_rust::YamlLoader::load_from_str(r##"[1, 2, "th$r}ee", "f{ou}r${PWD}f$ve${HOME}", "${HOME}"] "##)?;
+        let yaml = yaml[0].as_vec().unwrap();
+
+        let exp = vec![
+            "1".to_string(),
+            "2".to_string(),
+            "th$r}ee".to_string(),
+            format!("f{2}r{0}f$ve{1}", std::env::var("PWD")?, std::env::var("HOME")?, "{ou}"),
+            std::env::var("HOME")?,
+        ];
+
+        let ans = super::to_env_string_list(yaml).unwrap();
+
+        assert_eq!(ans, exp);
+        Ok(())
+    }
+}
