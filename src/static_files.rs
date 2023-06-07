@@ -29,21 +29,17 @@ pub async fn send_file(req: Request<Body>, opts: &Opts) -> crate::Result<Respons
 
     let if_modified_since = read_time(&headers.get(header::IF_MODIFIED_SINCE));
 
-    for enc in ENCODINGS.iter() {
+    for (enc, prefix) in ENCODINGS.iter() {
         path.truncate(len);
 
         let unencryped = enc.is_empty();
-        let prefix;
         if !unencryped {
             if !can_compress(enc, encodings) {
                 continue;
             }
 
-            prefix = std::str::from_utf8(enc).unwrap();
             path += ".";
             path += prefix;
-        } else {
-            prefix = ""
         }
         if let Ok(md) = fs::metadata(&path).await {
             let last_modified = round_time_secs(md.modified().unwrap());
@@ -53,7 +49,7 @@ pub async fn send_file(req: Request<Body>, opts: &Opts) -> crate::Result<Respons
                 .header(header::LAST_MODIFIED, HttpDate::from(last_modified).to_string())
                 .header(header::CACHE_CONTROL, &opts.cache_control);
             if !unencryped {
-                rb = rb.header(header::CONTENT_ENCODING, prefix.to_string())
+                rb = rb.header(header::CONTENT_ENCODING, std::str::from_utf8(enc).unwrap())
             }
 
             if let Some(if_modified_since) = if_modified_since {
@@ -66,15 +62,15 @@ pub async fn send_file(req: Request<Body>, opts: &Opts) -> crate::Result<Respons
                 return Ok(rb.status(200).body(Body::empty())?);
             }
 
-            match fs::read(&path).await {
-                Ok(body) => {
-                    return Ok(rb.status(200).body(Body::from(body))?);
-                }
+            return match fs::read(&path).await {
+                Ok(body) => Ok(rb.status(200).body(Body::from(body))?),
                 Err(err) => match err.kind() {
-                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied => {}
-                    _ => return Ok(Response::builder().status(500).body(Body::from(err.to_string()))?),
+                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied => {
+                        continue;
+                    }
+                    _ => Ok(Response::builder().status(500).body(Body::from(err.to_string()))?),
                 },
-            }
+            };
         }
     }
 
@@ -173,7 +169,7 @@ fn can_compress(enc: &[u8], encodings: &[u8]) -> bool {
     }
 }
 
-static ENCODINGS: [&[u8]; 2] = [b"br", b""];
+static ENCODINGS: [(&[u8], &str); 3] = [(b"br", "br"), (b"gzip", "gz"), (b"", "")];
 
 #[cfg(test)]
 mod tests {
