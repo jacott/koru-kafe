@@ -6,6 +6,7 @@ use hyper::{Body, Request, Response};
 use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 // use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio_rustls::{rustls, LazyConfigAcceptor};
@@ -60,106 +61,135 @@ fn with_domain(host: Option<&str>, domains: &DomainMap) -> Option<Arc<Domain>> {
     }
 }
 
-pub async fn listen(addr: String, domains: DomainMap) -> crate::Result<()> {
+pub async fn listen(addr: String, domains: DomainMap, mut reload: mpsc::Receiver<DomainMap>) -> crate::Result<()> {
     let listener = TcpListener::bind(&addr)
         .await
         .map_err(|e| io::Error::new(e.kind(), format!("listen on {} failed - {}", addr, e)))
         .unwrap();
 
-    let domains = Arc::new(domains);
+    let mut domains = Arc::new(domains);
     loop {
-        let (stream, _) = listener.accept().await?;
-        let domains = domains.clone();
-        let ip_addr = stream.peer_addr().unwrap().ip();
-        tokio::spawn(async move {
-            let conn_fut = Http::new()
-                .serve_connection(
-                    stream,
-                    service_fn(move |req| {
-                        let host = host_from_req(&req);
-                        let domain = with_domain(host, &domains);
-                        handler(req, ip_addr, domain)
-                    }),
-                )
-                .with_upgrades();
-            if let Err(e) = conn_fut.await {
-                if let Some(e) = e.into_cause() {
-                    if let Ok(e) = e.downcast::<io::Error>() {
-                        match e.kind() {
-                            io::ErrorKind::UnexpectedEof => {}
-                            _ => {
-                                eprintln!("An error occurred: {:?}", e);
+        tokio::select! {
+            new_domains = reload.recv() => {
+                match new_domains {
+                    Some(mut new_domains) => {
+                        for (k, v) in domains.iter() {
+                            if !new_domains.contains_key(k) {
+                                new_domains.insert(k.to_string(), v.clone());
                             }
                         }
-                    }
+                        domains = Arc::new(new_domains)
+                    },
+                    None => return Ok(())
                 }
             }
-        });
-    }
-}
-
-pub async fn tls_listen(addr: String, domains: DomainMap) -> crate::Result<()> {
-    let listener = TcpListener::bind(&addr)
-        .await
-        .map_err(|e| io::Error::new(e.kind(), format!("listen on {} failed - {}", addr, e)))
-        .unwrap();
-    let domains = Arc::new(domains);
-
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let domains = domains.clone();
-        tokio::spawn(async move {
-            let ip_addr = stream.peer_addr().unwrap().ip();
-            let acceptor = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream);
-            // futures_util::pin_mut!(acceptor);
-
-            match acceptor // .as_mut()
-                .await
-            {
-                Ok(start) => {
-                    let client_hello = start.client_hello();
-                    let host = client_hello.server_name();
-
-                    if let Some(domain) = with_domain(host, &domains) {
-                        let stream = start.into_stream(domain.tls_config.clone().unwrap()).await.unwrap();
-
-                        let conn_fut = Http::new()
-                            .serve_connection(
-                                stream,
-                                service_fn(move |req| handler(req, ip_addr, Some(domain.clone()))),
-                            )
-                            .with_upgrades();
-                        if let Err(e) = conn_fut.await {
-                            if let Some(e) = e.into_cause() {
-                                if let Ok(e) = e.downcast::<io::Error>() {
-                                    match e.kind() {
-                                        io::ErrorKind::UnexpectedEof => {}
-                                        _ => {
-                                            eprintln!("An error occurred: {:?}", e);
-                                        }
+            conn = listener.accept() => {
+                let (stream, peer_addr) = conn?;
+                let domains = domains.clone();
+                let ip_addr = peer_addr.ip();
+                tokio::spawn(async move {
+                    let conn_fut = Http::new()
+                        .serve_connection(
+                            stream,
+                            service_fn(move |req| {
+                                let host = host_from_req(&req);
+                                let domain = with_domain(host, &domains);
+                                handler(req, ip_addr, domain)
+                            }),
+                        )
+                        .with_upgrades();
+                    if let Err(e) = conn_fut.await {
+                        if let Some(e) = e.into_cause() {
+                            if let Ok(e) = e.downcast::<io::Error>() {
+                                match e.kind() {
+                                    io::ErrorKind::UnexpectedEof => {}
+                                    _ => {
+                                        eprintln!("An error occurred: {:?}", e);
                                     }
                                 }
                             }
                         }
                     }
-                }
-                Err(err) => {
-                    let _msg = match err.kind() {
-                        io::ErrorKind::InvalidInput => {
-                            eprintln!("{:?} - 400 Not a TLS handshake", ip_addr);
-                            "HTTP/1.1 400 Expected an HTTPS request\r\n\r\n\r\nExpected an HTTPS request\n".to_string()
-                        }
-                        _ => {
-                            eprintln!("{:?} - 500 Server Error:\n{:?}\n", ip_addr, err);
-                            format!("HTTP/1.1 500 Server Error\r\n\r\n\r\n{:?}\n", err)
-                        }
-                    };
-                    // if let Some(mut stream) = acceptor.take_io() {
-                    //     stream.write_all(msg.as_bytes()).await.unwrap();
-                    // }
+                });
+            }
+        }
+    }
+}
+
+pub async fn tls_listen(addr: String, domains: DomainMap, mut reload: mpsc::Receiver<DomainMap>) -> crate::Result<()> {
+    let listener = TcpListener::bind(&addr)
+        .await
+        .map_err(|e| io::Error::new(e.kind(), format!("listen on {} failed - {}", addr, e)))
+        .unwrap();
+    let mut domains = Arc::new(domains);
+
+    loop {
+        tokio::select! {
+            new_domains = reload.recv() => {
+                eprintln!("DEBUG new_domains {:?}", new_domains.is_some());
+
+                match new_domains {
+                    Some(new_domains) => domains = Arc::new(new_domains),
+                    None => return Ok(())
                 }
             }
-        });
+            conn = listener.accept() => {
+                let (stream, peer_addr) = conn?;
+                let domains = domains.clone();
+                let ip_addr = peer_addr.ip();
+                tokio::spawn(async move {
+                    let acceptor = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream);
+                    // futures_util::pin_mut!(acceptor);
+
+                    match acceptor // .as_mut()
+                        .await
+                    {
+                        Ok(start) => {
+                            let client_hello = start.client_hello();
+                            let host = client_hello.server_name();
+
+                            if let Some(domain) = with_domain(host, &domains) {
+                                let stream = start.into_stream(domain.tls_config.clone().unwrap()).await.unwrap();
+
+                                let conn_fut = Http::new()
+                                    .serve_connection(
+                                        stream,
+                                        service_fn(move |req| handler(req, ip_addr, Some(domain.clone()))),
+                                    )
+                                    .with_upgrades();
+                                if let Err(e) = conn_fut.await {
+                                    if let Some(e) = e.into_cause() {
+                                        if let Ok(e) = e.downcast::<io::Error>() {
+                                            match e.kind() {
+                                                io::ErrorKind::UnexpectedEof => {}
+                                                _ => {
+                                                    eprintln!("An error occurred: {:?}", e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            let _msg = match err.kind() {
+                                io::ErrorKind::InvalidInput => {
+                                    eprintln!("{:?} - 400 Not a TLS handshake", ip_addr);
+                                    "HTTP/1.1 400 Expected an HTTPS request\r\n\r\n\r\nExpected an HTTPS request\n".to_string()
+                                }
+                                _ => {
+                                    eprintln!("{:?} - 500 Server Error:\n{:?}\n", ip_addr, err);
+                                    format!("HTTP/1.1 500 Server Error\r\n\r\n\r\n{:?}\n", err)
+                                }
+                            };
+                            // if let Some(mut stream) = acceptor.take_io() {
+                            //     stream.write_all(msg.as_bytes()).await.unwrap();
+                            // }
+                        }
+                    }
+                });
+            }
+        }
     }
 }
 

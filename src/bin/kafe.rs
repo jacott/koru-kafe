@@ -1,27 +1,32 @@
-use koru_kafe::{conf, listener, Result};
+use koru_kafe::{conf, Result};
+use tokio::{
+    signal::unix::{signal, SignalKind},
+    sync::mpsc,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (tls_map, psl_map, _service_map) = conf::load()?;
-    let mut handles = Vec::with_capacity(psl_map.len());
+    let cdir = conf::default_cfg()?;
 
-    for (addr, domains) in tls_map {
-        println!("TLS Server started, listening on {}", addr);
+    let (tx, rx) = mpsc::channel(1);
 
-        handles.push(tokio::task::spawn(async move {
-            listener::tls_listen(addr, domains).await.unwrap();
-        }));
-    }
+    let mut finished = conf::load_and_monitor(&cdir, rx).await?;
 
-    for (addr, domains) in psl_map {
-        println!("Http/1 Server started, listening on {}", addr);
-        handles.push(tokio::task::spawn(async move {
-            listener::listen(addr, domains).await.unwrap();
-        }));
-    }
+    let mut sig = signal(SignalKind::hangup())?;
 
-    for handle in handles {
-        handle.await?;
+    loop {
+        tokio::select! {
+            _ = &mut finished => {
+                eprintln!("DEBUG here {:?}", finished);
+
+                break;
+            }
+            _ = sig.recv() => {
+                eprintln!("DEBUG sig {:?}", sig);
+
+                tx.send(()).await?;
+            }
+        }
     }
 
     Ok(())

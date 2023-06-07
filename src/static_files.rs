@@ -1,9 +1,6 @@
 use httpdate::HttpDate;
 use hyper::{header, http::HeaderValue, Body, Method, Request, Response};
-use std::{
-    io,
-    time::{Duration, SystemTime},
-};
+use std::{io, time::SystemTime};
 use tokio::fs;
 
 #[derive(Debug)]
@@ -42,7 +39,7 @@ pub async fn send_file(req: Request<Body>, opts: &Opts) -> crate::Result<Respons
             path += prefix;
         }
         if let Ok(md) = fs::metadata(&path).await {
-            let last_modified = round_time_secs(md.modified().unwrap());
+            let last_modified = crate::round_time_secs(md.modified().unwrap());
 
             let mut rb = Response::builder()
                 .header(header::CONTENT_TYPE, &mime_type)
@@ -76,10 +73,6 @@ pub async fn send_file(req: Request<Body>, opts: &Opts) -> crate::Result<Respons
 
     eprintln!("{} 404", &url_path);
     Ok(Response::builder().status(404).body(Body::from("Not Found\n"))?)
-}
-
-fn round_time_secs(time: SystemTime) -> SystemTime {
-    SystemTime::UNIX_EPOCH + Duration::new(time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(), 0)
 }
 
 fn read_time(value: &Option<&HeaderValue>) -> Option<SystemTime> {

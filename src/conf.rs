@@ -1,6 +1,6 @@
 use crate::{
-    domain::{self, Domain, DynLocation},
-    koru_service,
+    domain::{self, Domain, DomainMap, DynLocation},
+    koru_service, listener,
     location_path::expand_path,
     static_files,
 };
@@ -12,8 +12,13 @@ use std::{
     env, fs, io,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use std::{error::Error, fmt};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinSet,
+};
 use tokio_rustls::rustls;
 use yaml_rust::{yaml, Yaml, YamlLoader};
 
@@ -23,49 +28,6 @@ pub mod domain_conf;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Conf;
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Listener {
-    pub host: String,
-    pub port: String,
-    pub domains: Vec<domain_conf::DomainConf>,
-}
-
-impl Listener {
-    pub fn key(&self) -> String {
-        format!("{}:{}", self.host, self.port)
-    }
-}
-
-impl Default for Listener {
-    fn default() -> Self {
-        Self {
-            host: "127.0.0.1".to_string(),
-            port: "8080".to_string(),
-            domains: vec![Default::default()],
-        }
-    }
-}
-
-fn yaml_get_opt_string(h: &yaml::Hash, field: &str) -> Result<Option<String>, String> {
-    if let Some(v) = h.get(&Yaml::String(field.to_string())) {
-        if let Some(v) = v.as_str() {
-            Ok(Some(v.to_string()))
-        } else {
-            Err(format!("field {} not a string", field))
-        }
-    } else {
-        Ok(None)
-    }
-}
-
-// fn yaml_get_string(h: &yaml::Hash, field: &str) -> Result<String, String> {
-//     if let Some(v) = yaml_get_opt_string(h, field)? {
-//         Ok(v)
-//     } else {
-//         Err(format!("Missing field {}", field))
-//     }
-// }
 
 #[derive(Clone, PartialEq, Debug, Eq)]
 pub struct ConfError {
@@ -388,19 +350,67 @@ fn load_location(domain: &Domain, path: &Path, k: &str, v: &Yaml) -> Result<Arc<
     Err(ConfError::new(path, k, &format!("Invalid value {:?}", v)))
 }
 
-pub fn load() -> Result<(ListernerMap, ListernerMap, domain::ServiceMap), ConfError> {
+pub fn default_cfg() -> Result<PathBuf, ConfError> {
     let pdir = ProjectDirs::from("", "", "koru-kafe");
     if pdir.is_none() {
         return Err(ConfError::new(&PathBuf::new(), "???", "Can't find config dir"));
     }
     let pdir = pdir.unwrap();
-    let cdir = pdir.config_dir();
-    load_from(cdir)
+    Ok(pdir.config_dir().to_owned())
 }
 
-pub fn load_from(cdir: &Path) -> Result<(ListernerMap, ListernerMap, domain::ServiceMap), ConfError> {
-    let mut tls_map = HashMap::new(); // TLS encrypted socket listener
-    let mut psl_map = HashMap::new(); // unencrypted socket listener
+pub async fn load_and_monitor(cdir: &Path, mut reload: mpsc::Receiver<()>) -> Result<oneshot::Receiver<()>, ConfError> {
+    let cdir = PathBuf::from(cdir);
+    let last_scanned = crate::round_time_secs(SystemTime::now());
+    let mut set = JoinSet::new();
+
+    let mut reload_map = HashMap::new();
+    load_and_start(&mut set, &mut reload_map, &cdir, UNIX_EPOCH).await?;
+
+    let (finished_tx, finished_rx) = oneshot::channel();
+
+    tokio::spawn(async move {
+        let mut last_scanned = last_scanned;
+        loop {
+            tokio::select! {
+                _x = set.join_next() => {
+                    eprintln!("DEBUG join {:?}", _x);
+
+                    set.shutdown().await;
+                    break;
+                }
+                r = reload.recv() => {
+                    match r {
+                        Some(_) => {
+                            let prev_mod_time = last_scanned;
+                            last_scanned = crate::round_time_secs(SystemTime::now());
+                            if let Err(err) = load_and_start(&mut set, &mut reload_map, &cdir, prev_mod_time).await {
+                                eprintln!("Error reloading config:\n{:?}::\n", err);
+                                set.shutdown().await;
+                                break;
+                            }
+                        },
+                        None => {
+                            eprintln!("DEBUG none recv");
+
+                            set.shutdown().await;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        eprintln!("DEBUG conf {:?}", set);
+
+        let _ = finished_tx.send(());
+    });
+
+    Ok(finished_rx)
+}
+
+pub fn load_from(cdir: &Path, modified_since: SystemTime) -> Result<(ListernerMap, domain::ServiceMap), ConfError> {
+    let mut listener_map: HashMap<String, DomainMap> = HashMap::new();
     let mut service_map = HashMap::new();
     let mut tls_config_map: HashMap<String, Arc<rustls::ServerConfig>> = HashMap::new();
 
@@ -408,7 +418,13 @@ pub fn load_from(cdir: &Path) -> Result<(ListernerMap, ListernerMap, domain::Ser
         entry.ok().and_then(|e| {
             e.path().file_name()?.to_str().and_then(|n| {
                 if n.ends_with(".yml") && n != "default-config.yml" {
-                    Some(e)
+                    match e.metadata() {
+                        Err(_) => None,
+                        Ok(m) => match m.modified() {
+                            Ok(st) if st > modified_since => Some(e),
+                            _ => None,
+                        },
+                    }
                 } else {
                     None
                 }
@@ -441,18 +457,28 @@ pub fn load_from(cdir: &Path) -> Result<(ListernerMap, ListernerMap, domain::Ser
         }
         let domain = Arc::new(domain);
         for l in listeners {
-            let entry = if domain.cert_path.is_empty() {
-                psl_map.entry(l).or_insert(HashMap::new())
-            } else {
-                tls_map.entry(l).or_insert(HashMap::new())
-            };
+            if let Some(dm) = listener_map.get(&l) {
+                if let Some(v) = dm.values().next() {
+                    if v.cert_path.is_empty() != domain.cert_path.is_empty() {
+                        return Err(ConfError::new(
+                            cdir,
+                            "cert_path",
+                            &format!(
+                                "Mixed TLS and Plain domains on listener: {} and {}\n",
+                                v.name, domain.name
+                            ),
+                        ));
+                    }
+                }
+            }
+            let entry = listener_map.entry(l).or_insert(HashMap::new());
             entry.insert(domain.name.to_string(), domain.clone());
             for name in &domain.aliases {
                 entry.insert(name.to_string(), domain.clone());
             }
         }
     }
-    Ok((tls_map, psl_map, service_map))
+    Ok((listener_map, service_map))
 }
 
 fn set_cert(domain: &mut Domain) -> Result<Arc<rustls::ServerConfig>, String> {
@@ -504,11 +530,82 @@ fn load_key(path: &Path) -> io::Result<rustls::PrivateKey> {
     ))
 }
 
+fn yaml_get_opt_string(h: &yaml::Hash, field: &str) -> Result<Option<String>, String> {
+    if let Some(v) = h.get(&Yaml::String(field.to_string())) {
+        if let Some(v) = v.as_str() {
+            Ok(Some(v.to_string()))
+        } else {
+            Err(format!("field {} not a string", field))
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+type ReloadMap = HashMap<String, mpsc::Sender<HashMap<String, Arc<Domain>>>>;
+
+async fn load_and_start(
+    set: &mut JoinSet<()>,
+    reload_map: &mut ReloadMap,
+    cdir: &Path,
+    last_scanned: SystemTime,
+) -> Result<(), ConfError> {
+    let (domain_map, mut services_map) = load_from(cdir, last_scanned)?;
+
+    if !services_map.is_empty() {
+        if last_scanned != UNIX_EPOCH {
+            eprintln!(
+                "Managed services is not currently supported for reload!\n{:?}\n",
+                services_map.keys().collect::<Vec<&String>>()
+            );
+        } else {
+            for (_, service) in services_map.drain() {
+                set.spawn(async move {
+                    if let Err(err) = service.start().await {
+                        eprintln!("Failed to start {}:\n{:?}\n", service.cmd_name().unwrap(), err);
+                    }
+                });
+            }
+        }
+    }
+
+    for (addr, domains) in domain_map {
+        if let Some(tx) = reload_map.get_mut(&addr) {
+            println!("Reloading Server listening on {}", addr);
+
+            if let Err(err) = tx.send(domains).await {
+                return Err(ConfError::new(cdir, &addr, err.to_string().as_str()));
+            }
+        } else {
+            println!("Listening on {}", addr);
+
+            let (tx, rx) = mpsc::channel(1);
+
+            reload_map.insert(addr.clone(), tx);
+
+            set.spawn(async move {
+                if let Some(d) = domains.values().next() {
+                    let res = if d.cert_path.is_empty() {
+                        listener::listen(addr, domains, rx).await
+                    } else {
+                        listener::tls_listen(addr, domains, rx).await
+                    };
+                    if let Err(err) = res {
+                        eprintln!("Listen err {:?}", err);
+                    }
+                }
+            });
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     // use super::*;
 
-    use std::path::Path;
+    use std::{path::Path, time::UNIX_EPOCH};
 
     fn s(v: &str) -> String {
         v.to_string()
@@ -516,8 +613,7 @@ mod tests {
 
     #[test]
     fn load_from() -> crate::Result<()> {
-        let (ca, cb, _) = super::load_from(Path::new("tests/config"))?;
-        assert_eq!(ca.len(), 0);
+        let (cb, _) = super::load_from(Path::new("tests/config"), UNIX_EPOCH)?;
         assert_eq!(cb.len(), 1);
         let (n, ds) = cb.iter().next().unwrap();
         assert_eq!(n, "localhost:8080");
