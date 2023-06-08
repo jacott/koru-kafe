@@ -71,8 +71,7 @@ pub async fn send_file(req: Request<Body>, opts: &Opts) -> crate::Result<Respons
         }
     }
 
-    eprintln!("{} 404", &url_path);
-    Ok(Response::builder().status(404).body(Body::from("Not Found\n"))?)
+    Err(Box::new(io::Error::new(io::ErrorKind::NotFound, "Not Found")))
 }
 
 fn read_time(value: &Option<&HeaderValue>) -> Option<SystemTime> {

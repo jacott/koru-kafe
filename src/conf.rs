@@ -373,9 +373,7 @@ pub async fn load_and_monitor(cdir: &Path, mut reload: mpsc::Receiver<()>) -> Re
         let mut last_scanned = last_scanned;
         loop {
             tokio::select! {
-                _x = set.join_next() => {
-                    eprintln!("DEBUG join {:?}", _x);
-
+                _ = set.join_next() => {
                     set.shutdown().await;
                     break;
                 }
@@ -391,8 +389,6 @@ pub async fn load_and_monitor(cdir: &Path, mut reload: mpsc::Receiver<()>) -> Re
                             }
                         },
                         None => {
-                            eprintln!("DEBUG none recv");
-
                             set.shutdown().await;
                             break;
                         }
@@ -401,7 +397,7 @@ pub async fn load_and_monitor(cdir: &Path, mut reload: mpsc::Receiver<()>) -> Re
             }
         }
 
-        eprintln!("DEBUG conf {:?}", set);
+        eprintln!("Shutdown");
 
         let _ = finished_tx.send(());
     });

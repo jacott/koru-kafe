@@ -17,9 +17,10 @@ async fn handler(
     domain: Option<Arc<Domain>>,
 ) -> crate::Result<Response<Body>> {
     let path = req.uri().path();
+
     if let Some(domain) = domain {
         match domain.find_location(path) {
-            None => Err(format!("Unhandled path: {}", path).into()),
+            None => domain.handle_error(Box::new(io::Error::new(io::ErrorKind::NotFound, "Not Found"))),
             Some(loc) => match loc.convert(&domain, &mut req, &ip_addr) {
                 Ok(nl) => {
                     let loc = match nl {
@@ -88,7 +89,7 @@ pub async fn listen(addr: String, domains: DomainMap, mut reload: mpsc::Receiver
                 let domains = domains.clone();
                 let ip_addr = peer_addr.ip();
                 tokio::spawn(async move {
-                    let conn_fut = Http::new()
+                    let res = Http::new()
                         .serve_connection(
                             stream,
                             service_fn(move |req| {
@@ -97,20 +98,24 @@ pub async fn listen(addr: String, domains: DomainMap, mut reload: mpsc::Receiver
                                 handler(req, ip_addr, domain)
                             }),
                         )
-                        .with_upgrades();
-                    if let Err(e) = conn_fut.await {
-                        if let Some(e) = e.into_cause() {
-                            if let Ok(e) = e.downcast::<io::Error>() {
-                                match e.kind() {
-                                    io::ErrorKind::UnexpectedEof => {}
-                                    _ => {
-                                        eprintln!("An error occurred: {:?}", e);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                        .with_upgrades().await;
+                    print_hyper_error(res);
                 });
+            }
+        }
+    }
+}
+
+fn print_hyper_error(res: Result<(), hyper::Error>) {
+    if let Err(e) = res {
+        if let Some(e) = e.into_cause() {
+            if let Ok(e) = e.downcast::<io::Error>() {
+                match e.kind() {
+                    io::ErrorKind::UnexpectedEof => {}
+                    _ => {
+                        eprintln!("An error occurred: {:?}", e);
+                    }
+                }
             }
         }
     }
@@ -126,12 +131,12 @@ pub async fn tls_listen(addr: String, domains: DomainMap, mut reload: mpsc::Rece
     loop {
         tokio::select! {
             new_domains = reload.recv() => {
-                eprintln!("DEBUG new_domains {:?}", new_domains.is_some());
-
                 match new_domains {
                     Some(new_domains) => domains = Arc::new(new_domains),
                     None => return Ok(())
                 }
+
+                eprintln!("DEBUG new_domains {}", domains.len());
             }
             conn = listener.accept() => {
                 let (stream, peer_addr) = conn?;
@@ -151,24 +156,13 @@ pub async fn tls_listen(addr: String, domains: DomainMap, mut reload: mpsc::Rece
                             if let Some(domain) = with_domain(host, &domains) {
                                 let stream = start.into_stream(domain.tls_config.clone().unwrap()).await.unwrap();
 
-                                let conn_fut = Http::new()
+                                let res = Http::new()
                                     .serve_connection(
                                         stream,
                                         service_fn(move |req| handler(req, ip_addr, Some(domain.clone()))),
                                     )
-                                    .with_upgrades();
-                                if let Err(e) = conn_fut.await {
-                                    if let Some(e) = e.into_cause() {
-                                        if let Ok(e) = e.downcast::<io::Error>() {
-                                            match e.kind() {
-                                                io::ErrorKind::UnexpectedEof => {}
-                                                _ => {
-                                                    eprintln!("An error occurred: {:?}", e);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                    .with_upgrades().await;
+                                print_hyper_error(res);
                             }
                         }
                         Err(err) => {

@@ -32,6 +32,15 @@ impl Domain {
     }
 
     pub fn handle_error(&self, err: crate::Error) -> crate::Result<Response<Body>> {
+        if let Some(e) = err.downcast_ref::<io::Error>() {
+            return match e.kind() {
+                io::ErrorKind::PermissionDenied => self.client_error(400),
+                io::ErrorKind::NotFound => self.client_error(404),
+                io::ErrorKind::ConnectionRefused => self.server_error(502, e.to_string()),
+                _ => self.server_error(500, e.to_string()),
+            };
+        }
+
         if let Some(e) = err.downcast_ref::<hyper::Error>() {
             if e.is_user() {
                 return self.client_error(400);
@@ -42,29 +51,20 @@ impl Domain {
             return self.server_error(500, e.to_string());
         }
 
-        if let Some(e) = err.downcast_ref::<io::Error>() {
-            return match e.kind() {
-                io::ErrorKind::PermissionDenied | io::ErrorKind::NotFound => self.client_error(400),
-                io::ErrorKind::ConnectionRefused => self.server_error(502, e.to_string()),
-                _ => self.server_error(500, e.to_string()),
-            };
-        }
-
         self.server_error(500, err.to_string())
     }
 
     pub fn client_error(&self, code: u16) -> crate::Result<Response<Body>> {
-        Ok(Response::builder()
-            .status(code)
-            .body(format!("{} Client error\n", code).into())?)
+        let msg = format!("{} Client error\n", code);
+        eprintln!("{}", &msg);
+        Ok(Response::builder().status(code).body(msg.into())?)
     }
 
     pub fn server_error(&self, code: u16, message: String) -> crate::Result<Response<Body>> {
-        eprintln!("{} {}", code, message);
+        let msg = format!("{} Server error\n{}\n", code, message);
+        eprintln!("{}", msg);
 
-        Ok(Response::builder()
-            .status(code)
-            .body(format!("{} Server error\n{}\n", code, message).into())?)
+        Ok(Response::builder().status(code).body(msg.into())?)
     }
 }
 

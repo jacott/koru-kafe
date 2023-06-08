@@ -17,13 +17,9 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             _ = &mut finished => {
-                eprintln!("DEBUG here {:?}", finished);
-
                 break;
             }
             _ = sig.recv() => {
-                eprintln!("DEBUG sig {:?}", sig);
-
                 tx.send(()).await?;
             }
         }
