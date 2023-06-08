@@ -1,5 +1,4 @@
 use crate::domain::{Domain, DomainMap};
-use hyper::header::HOST;
 use hyper::server::conn::Http;
 use hyper::service::service_fn;
 use hyper::{Body, Request, Response};
@@ -7,7 +6,7 @@ use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-// use tokio::io::AsyncWriteExt;
+// use tokio::io::AsyncWriteExt; // TODO when acceptor.take_io is released
 use tokio::net::TcpListener;
 use tokio_rustls::{rustls, LazyConfigAcceptor};
 
@@ -42,23 +41,11 @@ async fn handler(
     }
 }
 
-fn host_from_req<T>(req: &Request<T>) -> Option<&str> {
-    if let Some(host_raw) = req.headers().get(HOST) {
-        if let Ok(host_raw) = host_raw.to_str() {
-            return Some(match host_raw.rfind(':') {
-                Some(idx) => &host_raw[..idx],
-                None => host_raw,
-            });
-        }
-    }
-    None
-}
-
 fn with_domain(host: Option<&str>, domains: &DomainMap) -> Option<Arc<Domain>> {
     if let Some(host) = host {
-        Some(domains.get(host)?.clone())
+        Some(domains.get(host).or_else(|| domains.get("*"))?.clone())
     } else {
-        None
+        Some(domains.get("*")?.clone())
     }
 }
 
@@ -93,7 +80,7 @@ pub async fn listen(addr: String, domains: DomainMap, mut reload: mpsc::Receiver
                         .serve_connection(
                             stream,
                             service_fn(move |req| {
-                                let host = host_from_req(&req);
+                                let host = crate::host_from_req(&req);
                                 let domain = with_domain(host, &domains);
                                 handler(req, ip_addr, domain)
                             }),
@@ -135,8 +122,6 @@ pub async fn tls_listen(addr: String, domains: DomainMap, mut reload: mpsc::Rece
                     Some(new_domains) => domains = Arc::new(new_domains),
                     None => return Ok(())
                 }
-
-                eprintln!("DEBUG new_domains {}", domains.len());
             }
             conn = listener.accept() => {
                 let (stream, peer_addr) = conn?;
@@ -189,37 +174,35 @@ pub async fn tls_listen(addr: String, domains: DomainMap, mut reload: mpsc::Rece
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
-    // use hyper::HeaderMap;
+    use super::*;
+    use std::collections::HashMap;
 
-    // #[tokio::test]
-    // async fn example_acceptor() {
-    //     use tokio::io::AsyncWriteExt;
-    //     let listener = tokio::net::TcpListener::bind("127.0.0.1:4443").await.unwrap();
-    //     let (stream, _) = listener.accept().await.unwrap();
-    //     let mut acceptor = tokio_rustls::AsyncAcceptor::new(stream);
-    //     match acceptor.accept().await {
-    //         Ok(start) => {
-    //             let config = choose_server_config(start.client_hello()).await.unwrap();
-    //             let stream = start.into_stream(config).await.unwrap();
-    //             // Proceed with handling the ServerConnection.
-    //         }
-    //         Err(err) => {
-    //             if let Some(mut stream) = acceptor.take_io() {
-    //                 stream
-    //                     .write_all(format!("HTTP/1.1 400 Invalid Input\r\n\r\n\r\n{:?}\n", err).as_bytes())
-    //                     .await
-    //                     .unwrap();
-    //             }
-    //         }
-    //     }
-    // }
+    #[test]
+    fn with_domain() {
+        let mut dm: DomainMap = HashMap::new();
+        assert!(super::with_domain(Some("foo"), &dm).is_none());
+        assert!(super::with_domain(None, &dm).is_none());
 
-    // #[test]
-    // fn header_map() {
-    //     let mut map = HeaderMap::new();
-    //     //        map.insert(HOST, "hello".parse().unwrap());
+        let any = Arc::new(Domain {
+            name: "*".to_string(),
+            ..Default::default()
+        });
+        dm.insert("*".to_string(), any.clone());
+        let ans = super::with_domain(Some("foo"), &dm);
+        assert!(ans.is_some());
+        assert_eq!(ans.unwrap().name.as_str(), "*");
 
-    //     assert_eq!(map.get(HOST).unwrap_or(""), "");
-    // }
+        dm.insert(
+            "foo".to_string(),
+            Arc::new(Domain {
+                name: "foo".to_string(),
+                ..Default::default()
+            }),
+        );
+        let ans = super::with_domain(Some("foo"), &dm);
+        assert!(ans.is_some());
+        assert_eq!(ans.unwrap().name.as_str(), "foo");
+
+        assert_eq!(&super::with_domain(None, &dm).unwrap().name, &any.name);
+    }
 }

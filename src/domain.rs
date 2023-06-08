@@ -1,7 +1,11 @@
 use async_trait::async_trait;
-use hyper::{http::uri::PathAndQuery, Body, Request, Response, Uri};
+use hyper::{
+    header,
+    http::uri::{self, PathAndQuery},
+    Body, Request, Response, StatusCode, Uri,
+};
 use radix_trie::Trie;
-use std::{collections::HashMap, error::Error, fmt::Display, io, net::IpAddr, str::FromStr, sync::Arc};
+use std::{any::Any, collections::HashMap, error::Error, fmt::Display, io, net::IpAddr, str::FromStr, sync::Arc};
 use tokio_rustls::rustls;
 
 use crate::{koru_service, static_files};
@@ -97,6 +101,8 @@ pub trait Location {
     fn info(&self) -> String {
         "Location".to_string()
     }
+
+    fn as_any(&self) -> &dyn Any;
 }
 
 impl core::fmt::Debug for dyn Location + Send + Sync {
@@ -132,6 +138,65 @@ impl Location for Rewrite {
             Some(l) => Ok(Some(l.clone())),
         }
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Redirect {
+    pub code: StatusCode,
+    pub scheme: Option<String>,
+    pub authority: Option<String>,
+    pub path: Option<String>,
+    pub query: Option<String>,
+}
+
+#[async_trait]
+impl Location for Redirect {
+    async fn connect(&self, req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
+        let mut parts = req.uri().clone().into_parts();
+        eprintln!("DEBUG parts {:?}", parts);
+
+        if let Some(v) = &self.scheme {
+            parts.scheme = Some(uri::Scheme::from_str(v)?);
+            if let Some(v) = &self.authority {
+                parts.authority = Some(uri::Authority::from_str(v)?);
+            } else if let Some(v) = crate::host_from_req(&req) {
+                parts.authority = Some(uri::Authority::from_str(v)?);
+            }
+        } else if let Some(v) = &self.authority {
+            parts.authority = Some(uri::Authority::from_str(v)?);
+        }
+
+        let curr_pq = parts
+            .path_and_query
+            .unwrap_or_else(|| PathAndQuery::from_str("/").unwrap());
+
+        parts.path_and_query = Some(if let Some(p) = &self.path {
+            if let Some(q) = &self.query {
+                PathAndQuery::from_str(&format!("{}?{}", p, q))?
+            } else {
+                PathAndQuery::from_str(p)?
+            }
+        } else if let Some(q) = &self.query {
+            PathAndQuery::from_str(&format!("{}?{}", curr_pq.path(), q))?
+        } else {
+            curr_pq
+        });
+
+        eprintln!("DEBUG parts {:?}", parts);
+
+        Ok(Response::builder()
+            .status(self.code)
+            .header(header::LOCATION, Uri::from_parts(parts)?.to_string())
+            .body(Body::empty())?)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -144,6 +209,10 @@ impl Location for File {
     async fn connect(&self, req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
         static_files::send_file(req, &self.opts).await
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -155,6 +224,10 @@ pub struct HttpProxy {
 impl Location for HttpProxy {
     async fn connect(&self, req: Request<Body>, ip_addr: IpAddr) -> crate::Result<Response<Body>> {
         koru_service::pass(req, ip_addr, &self.server_socket).await
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -181,8 +254,8 @@ impl Location for WebsocketProxy {
         Ok(response)
     }
 
-    fn info(&self) -> String {
-        format!("WebsocketProxy {}", self.server_socket)
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -207,6 +280,10 @@ mod tests {
                 .body((format!("hello {:?}", ans.0.unwrap().method())).into())
                 .unwrap())
         }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
     #[tokio::test]
     async fn connect() {
@@ -230,9 +307,51 @@ mod tests {
     #[tokio::test]
     async fn rewrite() {
         let mut d: Domain = Default::default();
-        d.location_prefixes.insert("/".to_string(), Arc::new(Foo {}));
+        d.locations.insert("/index.html".to_string(), Arc::new(Foo {}));
+        d.location_prefixes.insert(
+            "/".to_string(),
+            Arc::new(Rewrite {
+                path: "/index.html".to_string(),
+            }),
+        );
 
-        let req = Default::default();
+        let mut req = Request::builder()
+            .uri("http://localhost/?abc=123")
+            .body(Body::empty())
+            .unwrap();
+        let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+
+        let loc = d
+            .location_prefixes
+            .get("/")
+            .unwrap()
+            .convert(&d, &mut req, &ip_addr)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(req.uri().to_string(), "http://localhost/index.html?abc=123");
+        let resp = loc.connect(req, ip_addr).await.unwrap();
+
+        assert_eq!(to_bytes(resp.into_body()).await.unwrap(), "hello GET");
+    }
+
+    #[tokio::test]
+    async fn redirect() -> crate::Result<()> {
+        let mut d: Domain = Default::default();
+
+        d.location_prefixes.insert(
+            "/".to_string(),
+            Arc::new(Redirect {
+                code: StatusCode::MOVED_PERMANENTLY,
+                scheme: Some("https".to_string()),
+                ..Default::default()
+            }),
+        );
+
+        let req = Request::builder()
+            .uri("http://localhost/a/b/c?abc=123")
+            .body(Body::empty())
+            .unwrap();
         let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
         let resp = d
@@ -243,6 +362,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(to_bytes(resp.into_body()).await.unwrap(), "hello GET");
+        assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(
+            String::from_utf8(resp.headers().get(header::LOCATION).unwrap().as_bytes().to_vec())?.as_str(),
+            "https://localhost/a/b/c?abc=123"
+        );
+
+        assert_eq!(to_bytes(resp.into_body()).await.unwrap(), "");
+
+        Ok(())
     }
 }

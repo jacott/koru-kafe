@@ -1,0 +1,8 @@
+name: "*"
+
+listeners: ["[::]:8088"]
+
+root: app
+
+locations:
+  /*: {redirect: {code: 301, scheme: "https"}}

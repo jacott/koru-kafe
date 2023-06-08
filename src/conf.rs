@@ -1,10 +1,11 @@
 use crate::{
-    domain::{self, Domain, DomainMap, DynLocation},
+    domain::{self, Domain, DomainMap, DynLocation, Redirect},
     koru_service, listener,
     location_path::expand_path,
     static_files,
 };
 use directories::ProjectDirs;
+use hyper::StatusCode;
 use lazy_static::lazy_static;
 use serde_derive::{Deserialize, Serialize};
 use std::{
@@ -23,8 +24,6 @@ use tokio_rustls::rustls;
 use yaml_rust::{yaml, Yaml, YamlLoader};
 
 pub type ListernerMap = HashMap<String, domain::DomainMap>;
-
-pub mod domain_conf;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Conf;
@@ -53,7 +52,6 @@ impl ConfError {
 impl Error for ConfError {}
 
 impl fmt::Display for ConfError {
-    // col starts from 0
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         write!(formatter, "{} at filed {} file {}", self.info, self.field, self.file)
     }
@@ -78,6 +76,49 @@ impl LocationBuilder for RewriteBuilder {
         match yaml.as_str() {
             Some(s) => Ok(Arc::new(domain::Rewrite { path: s.to_string() })),
             None => Err("Invalid rewrite rule; expected string".to_string()),
+        }
+    }
+}
+
+struct RedirectBuilder;
+impl LocationBuilder for RedirectBuilder {
+    fn yaml_to_location(&self, _domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
+        match yaml.as_hash() {
+            Some(h) => {
+                let mut rw: Redirect = Default::default();
+
+                for (k, v) in h {
+                    match k.as_str() {
+                        None => return Err(format!("Unexpected error at {:?}", k)),
+                        Some(k) => {
+                            if k == "code" {
+                                if let Some(i) = v.as_i64() {
+                                    match StatusCode::from_u16(i as u16) {
+                                        Ok(v) => rw.code = v,
+                                        Err(err) => return Err(err.to_string()),
+                                    }
+                                }
+                            } else {
+                                if let Some(v) = v.as_str() {
+                                    match k {
+                                        "scheme" => rw.scheme = Some(v.to_string()),
+                                        "authority" => rw.authority = Some(v.to_string()),
+                                        "path" => rw.path = Some(v.to_string()),
+                                        "query" => rw.query = Some(v.to_string()),
+                                        _ => return Err(format!("Unexpected field: {}", k)),
+                                    }
+                                    continue;
+                                }
+
+                                return Err(format!("Invalid field value: {:?}", k));
+                            }
+                        }
+                    }
+                }
+
+                Ok(Arc::new(rw))
+            }
+            None => Err("Invalid redirect rule; expected opts".to_string()),
         }
     }
 }
@@ -145,6 +186,7 @@ lazy_static! {
     static ref LOCATION_BUILDERS: LocationBuilders = {
         let mut m: HashMap<String, Arc<DynLocationBuilder>> = HashMap::new();
         m.insert("rewrite".to_string(), Arc::new(RewriteBuilder));
+        m.insert("redirect".to_string(), Arc::new(RedirectBuilder));
         m.insert("file".to_string(), Arc::new(FileBuilder));
         m.insert("http_proxy".to_string(), Arc::new(HttpProxyBuilder));
         m.insert("websocket_proxy".to_string(), Arc::new(WebsocketProxyBuilder));
@@ -160,7 +202,8 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
         return Err(ConfError::new(path, "first line", "expected Hash"));
     }
     if let Some(Yaml::Hash(map)) = docs.get(0) {
-        let get_field = |f: &str| match map.get(&Yaml::String(f.to_string())) {
+        let get_opt_field = |f: &str| map.get(&Yaml::String(f.to_string()));
+        let get_field = |f: &str| match get_opt_field(f) {
             None => Err(ConfError::new(path, f, "Missing field")),
             Some(v) => Ok(v),
         };
@@ -197,7 +240,7 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
         domain.cert_path = opt_field("cert_path")?;
 
         let field = &"services";
-        if let Some(paths) = get_field(field)?.as_hash() {
+        if let Some(paths) = get_opt_field(field).and_then(|v| v.as_hash()) {
             for (k, v) in paths {
                 let k = k.as_str().unwrap_or("");
                 if v.as_hash().is_none() {
@@ -405,7 +448,7 @@ pub async fn load_and_monitor(cdir: &Path, mut reload: mpsc::Receiver<()>) -> Re
     Ok(finished_rx)
 }
 
-pub fn load_from(cdir: &Path, modified_since: SystemTime) -> Result<(ListernerMap, domain::ServiceMap), ConfError> {
+pub fn load_from(cdir: &Path, _modified_since: SystemTime) -> Result<(ListernerMap, domain::ServiceMap), ConfError> {
     let mut listener_map: HashMap<String, DomainMap> = HashMap::new();
     let mut service_map = HashMap::new();
     let mut tls_config_map: HashMap<String, Arc<rustls::ServerConfig>> = HashMap::new();
@@ -414,13 +457,7 @@ pub fn load_from(cdir: &Path, modified_since: SystemTime) -> Result<(ListernerMa
         entry.ok().and_then(|e| {
             e.path().file_name()?.to_str().and_then(|n| {
                 if n.ends_with(".yml") && n != "default-config.yml" {
-                    match e.metadata() {
-                        Err(_) => None,
-                        Ok(m) => match m.modified() {
-                            Ok(st) if st > modified_since => Some(e),
-                            _ => None,
-                        },
-                    }
+                    Some(e)
                 } else {
                     None
                 }
@@ -603,6 +640,8 @@ mod tests {
 
     use std::{path::Path, time::UNIX_EPOCH};
 
+    use crate::domain::Redirect;
+
     fn s(v: &str) -> String {
         v.to_string()
     }
@@ -610,9 +649,25 @@ mod tests {
     #[test]
     fn load_from() -> crate::Result<()> {
         let (cb, _) = super::load_from(Path::new("tests/config"), UNIX_EPOCH)?;
-        assert_eq!(cb.len(), 1);
-        let (n, ds) = cb.iter().next().unwrap();
-        assert_eq!(n, "localhost:8080");
+        assert_eq!(cb.len(), 2);
+
+        let ds = cb.get("[::]:8088").unwrap();
+        let (n, d) = ds.iter().next().unwrap();
+        assert_eq!(n, "*");
+
+        let rw = d
+            .location_prefixes
+            .get_ancestor_value("/abc/123")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Redirect>()
+            .unwrap();
+
+        assert_eq!(rw.code, 301);
+        assert_eq!(rw.scheme, Some("https".to_string()));
+        assert_eq!(rw.path, None);
+
+        let ds = cb.get("localhost:8080").unwrap();
 
         let (n, d) = ds.iter().next().unwrap();
         assert_eq!(n, "localhost");
