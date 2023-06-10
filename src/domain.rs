@@ -172,7 +172,7 @@ impl Location for Redirect {
 
         let curr_pq = parts
             .path_and_query
-            .unwrap_or_else(|| PathAndQuery::from_str("/").unwrap());
+            .unwrap_or_else(|| PathAndQuery::from_str("/").expect("/ to be valid"));
 
         parts.path_and_query = Some(if let Some(p) = &self.path {
             if let Some(q) = &self.query {

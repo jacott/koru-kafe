@@ -13,7 +13,13 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub fn round_time_secs(time: SystemTime) -> SystemTime {
-    SystemTime::UNIX_EPOCH + Duration::new(time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(), 0)
+    SystemTime::UNIX_EPOCH
+        + Duration::new(
+            time.duration_since(SystemTime::UNIX_EPOCH)
+                .expect("EPOCH to work")
+                .as_secs(),
+            0,
+        )
 }
 
 pub fn host_from_req<T>(req: &Request<T>) -> Option<&str> {

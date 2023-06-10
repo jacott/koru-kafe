@@ -54,10 +54,9 @@ fn convert_req(req: &mut Request<Body>, ip_addr: &IpAddr) {
 
     let headers = req.headers_mut();
 
-    headers.insert(
-        "X-Real-IP",
-        HeaderValue::from_str(ip_addr.to_string().as_str()).unwrap(),
-    );
+    if let Ok(v) = HeaderValue::from_str(ip_addr.to_string().as_str()) {
+        headers.insert("X-Real-IP", v);
+    }
 }
 
 // Tie hyper's executor to tokio runtime
@@ -127,8 +126,7 @@ pub async fn pass(mut req: Request<Body>, ip_addr: IpAddr, server_socket: &str) 
         server_socket,
         req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/")
     )
-    .parse()
-    .unwrap();
+    .parse()?;
 
     let client = Client::new();
 

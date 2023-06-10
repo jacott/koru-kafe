@@ -39,14 +39,17 @@ pub async fn send_file(req: Request<Body>, opts: &Opts) -> crate::Result<Respons
             path += prefix;
         }
         if let Ok(md) = fs::metadata(&path).await {
-            let last_modified = crate::round_time_secs(md.modified().unwrap());
+            let last_modified = crate::round_time_secs(md.modified().expect("modified not supported"));
 
             let mut rb = Response::builder()
                 .header(header::CONTENT_TYPE, &mime_type)
                 .header(header::LAST_MODIFIED, HttpDate::from(last_modified).to_string())
                 .header(header::CACHE_CONTROL, &opts.cache_control);
             if !unencryped {
-                rb = rb.header(header::CONTENT_ENCODING, std::str::from_utf8(enc).unwrap())
+                rb = rb.header(
+                    header::CONTENT_ENCODING,
+                    std::str::from_utf8(enc).expect("ENCODINGS bug"),
+                )
             }
 
             if let Some(if_modified_since) = if_modified_since {

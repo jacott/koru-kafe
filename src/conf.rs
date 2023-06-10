@@ -174,11 +174,20 @@ pub struct LocationBuilders {
 }
 impl LocationBuilders {
     pub fn add(name: &str, builder: Arc<DynLocationBuilder>) {
-        LOCATION_BUILDERS.map.write().unwrap().insert(name.to_string(), builder);
+        LOCATION_BUILDERS
+            .map
+            .write()
+            .expect("lock write to work")
+            .insert(name.to_string(), builder);
     }
 
     pub fn get(name: &str) -> Option<Arc<DynLocationBuilder>> {
-        LOCATION_BUILDERS.map.read().unwrap().get(name).cloned()
+        LOCATION_BUILDERS
+            .map
+            .read()
+            .expect("lock read to work")
+            .get(name)
+            .cloned()
     }
 }
 
@@ -264,9 +273,7 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
                 }
                 let loc = load_location(&domain, path, k, v)?;
                 for k in expand_path(k) {
-                    if k.ends_with('*') {
-                        let ks = k.strip_suffix('*').unwrap();
-
+                    if let Some(ks) = k.strip_suffix('*') {
                         domain.location_prefixes.insert(ks.to_string(), loc.clone());
                     } else {
                         domain.locations.insert(k.to_string(), loc.clone());
@@ -278,7 +285,11 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
         if let Some(name) = map.get(&Yaml::String(field.to_string())).and_then(|v| v.as_str()) {
             domain.name = name.to_string();
         } else {
-            let mut name = path.file_name().unwrap().to_string_lossy().to_string();
+            let mut name = path
+                .file_name()
+                .expect("conf to be a filename")
+                .to_string_lossy()
+                .to_string();
             name.truncate(name.len() - 4);
             domain.name = name;
         }
@@ -394,12 +405,10 @@ fn load_location(domain: &Domain, path: &Path, k: &str, v: &Yaml) -> Result<Arc<
 }
 
 pub fn default_cfg() -> Result<PathBuf, ConfError> {
-    let pdir = ProjectDirs::from("", "", "koru-kafe");
-    if pdir.is_none() {
-        return Err(ConfError::new(&PathBuf::new(), "???", "Can't find config dir"));
+    match ProjectDirs::from("", "", "koru-kafe") {
+        None => Err(ConfError::new(&PathBuf::new(), "???", "Can't find config dir")),
+        Some(pdir) => Ok(pdir.config_dir().to_owned()),
     }
-    let pdir = pdir.unwrap();
-    Ok(pdir.config_dir().to_owned())
 }
 
 pub async fn load_and_monitor(cdir: &Path, mut reload: mpsc::Receiver<()>) -> Result<oneshot::Receiver<()>, ConfError> {
@@ -522,19 +531,22 @@ fn set_cert(domain: &mut Domain) -> Result<Arc<rustls::ServerConfig>, String> {
     let cert = load_certs(&cert).map_err(|e| format!("bad cert {:?}: {}", cert, e))?;
     let priv_key = load_key(&priv_key).map_err(|e| format!("bad privkey {:?}: {}", priv_key, e))?;
 
-    let mut config = rustls::ServerConfig::builder()
+    match rustls::ServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(cert, priv_key)
-        .unwrap();
+    {
+        Err(err) => Err(err.to_string()),
+        Ok(mut config) => {
+            config.alpn_protocols.push(b"h2".to_vec());
+            config.alpn_protocols.push(b"http/1.1".to_vec());
 
-    config.alpn_protocols.push(b"h2".to_vec());
-    config.alpn_protocols.push(b"http/1.1".to_vec());
+            let config = Arc::new(config);
+            domain.tls_config = Some(config.clone());
 
-    let config = Arc::new(config);
-    domain.tls_config = Some(config.clone());
-
-    Ok(config)
+            Ok(config)
+        }
+    }
 }
 
 fn load_certs(path: &Path) -> io::Result<Vec<rustls::Certificate>> {
@@ -595,7 +607,11 @@ async fn load_and_start(
             for (_, service) in services_map.drain() {
                 set.spawn(async move {
                     if let Err(err) = service.start().await {
-                        eprintln!("Failed to start {}:\n{:?}\n", service.cmd_name().unwrap(), err);
+                        eprintln!(
+                            "Failed to start {}:\n{:?}\n",
+                            service.cmd_name().unwrap_or_default(),
+                            err
+                        );
                     }
                 });
             }

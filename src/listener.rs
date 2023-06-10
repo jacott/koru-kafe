@@ -52,8 +52,7 @@ fn with_domain(host: Option<&str>, domains: &DomainMap) -> Option<Arc<Domain>> {
 pub async fn listen(addr: String, domains: DomainMap, mut reload: mpsc::Receiver<DomainMap>) -> crate::Result<()> {
     let listener = TcpListener::bind(&addr)
         .await
-        .map_err(|e| io::Error::new(e.kind(), format!("listen on {} failed - {}", addr, e)))
-        .unwrap();
+        .map_err(|e| io::Error::new(e.kind(), format!("listen on {} failed - {}", addr, e)))?;
 
     let mut domains = Arc::new(domains);
     loop {
@@ -111,8 +110,8 @@ fn print_hyper_error(res: Result<(), hyper::Error>) {
 pub async fn tls_listen(addr: String, domains: DomainMap, mut reload: mpsc::Receiver<DomainMap>) -> crate::Result<()> {
     let listener = TcpListener::bind(&addr)
         .await
-        .map_err(|e| io::Error::new(e.kind(), format!("listen on {} failed - {}", addr, e)))
-        .unwrap();
+        .map_err(|e| io::Error::new(e.kind(), format!("listen on {} failed - {}", addr, e)))?;
+
     let mut domains = Arc::new(domains);
 
     loop {
@@ -139,37 +138,51 @@ pub async fn tls_listen(addr: String, domains: DomainMap, mut reload: mpsc::Rece
                             let host = client_hello.server_name();
 
                             if let Some(domain) = with_domain(host, &domains) {
-                                let stream = start.into_stream(domain.tls_config.clone().unwrap()).await.unwrap();
-
-                                let res = Http::new()
-                                    .serve_connection(
-                                        stream,
-                                        service_fn(move |req| handler(req, ip_addr, Some(domain.clone()))),
-                                    )
-                                    .with_upgrades().await;
-                                print_hyper_error(res);
+                                match start.into_stream(domain.tls_config.clone().expect("TLS config")).await {
+                                    Ok(stream) => {
+                                        let res = Http::new()
+                                            .serve_connection(
+                                                stream,
+                                                service_fn(move |req| handler(req, ip_addr, Some(domain.clone()))),
+                                            )
+                                            .with_upgrades().await;
+                                        print_hyper_error(res);
+                                    }
+                                    Err(err) => {
+                                        handle_error(err, ip_addr// , acceptor
+                                        );
+                                    }
+                                }
                             }
                         }
                         Err(err) => {
-                            let _msg = match err.kind() {
-                                io::ErrorKind::InvalidInput => {
-                                    eprintln!("{:?} - 400 Not a TLS handshake", ip_addr);
-                                    "HTTP/1.1 400 Expected an HTTPS request\r\n\r\n\r\nExpected an HTTPS request\n".to_string()
-                                }
-                                _ => {
-                                    eprintln!("{:?} - 500 Server Error:\n{:?}\n", ip_addr, err);
-                                    format!("HTTP/1.1 500 Server Error\r\n\r\n\r\n{:?}\n", err)
-                                }
-                            };
-                            // if let Some(mut stream) = acceptor.take_io() {
-                            //     stream.write_all(msg.as_bytes()).await.unwrap();
-                            // }
+                            handle_error(err, ip_addr// , acceptor
+                            );
                         }
                     }
                 });
             }
         }
     }
+}
+
+fn handle_error(
+    err: io::Error,
+    ip_addr: IpAddr, // , acceptor: LazyConfigAcceptor<TcpStream>
+) {
+    let _msg = match err.kind() {
+        io::ErrorKind::InvalidInput => {
+            eprintln!("{:?} - 400 Not a TLS handshake", ip_addr);
+            "HTTP/1.1 400 Expected an HTTPS request\r\n\r\n\r\nExpected an HTTPS request\n".to_string()
+        }
+        _ => {
+            eprintln!("{:?} - 500 Server Error:\n{:?}\n", ip_addr, err);
+            format!("HTTP/1.1 500 Server Error\r\n\r\n\r\n{:?}\n", err)
+        }
+    };
+    // if let Some(mut stream) = acceptor.take_io() {
+    //     stream.write_all(msg.as_bytes()).await.unwrap();
+    // }
 }
 
 #[cfg(test)]
