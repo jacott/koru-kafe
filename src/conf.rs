@@ -216,21 +216,6 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
             None => Err(ConfError::new(path, f, "Missing field")),
             Some(v) => Ok(v),
         };
-        let field = &"listeners";
-        let listeners = match get_field(field)?.as_vec() {
-            None => Err(cerr(field, "Expected String Vector")),
-            Some(v) => {
-                let vs: Vec<String> = v.iter().filter_map(|v| v.as_str().map(|v| v.to_string())).collect();
-                if v.len() == vs.len() {
-                    Ok(vs)
-                } else {
-                    Err(cerr(field, "Expected String Vector"))
-                }
-            }
-        }?;
-
-        let mut domain: Domain = Default::default();
-
         let opt_field = |field: &str| {
             let field = field.to_string();
             match map.get(&Yaml::String(field.clone())) {
@@ -245,8 +230,17 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
             }
         };
 
-        domain.root = opt_field("root")?;
-        domain.cert_path = opt_field("cert_path")?;
+        let field = &"listeners";
+        let listeners = match get_field(field)?.as_vec() {
+            None => Err(cerr(field, "Expected String Vector")),
+            Some(v) => to_env_string_list(v).ok_or(cerr(field, "Expected String Vector")),
+        }?;
+
+        let mut domain = Domain {
+            root: opt_field("root")?,
+            cert_path: opt_field("cert_path")?,
+            ..Default::default()
+        };
 
         let field = &"services";
         if let Some(paths) = get_opt_field(field).and_then(|v| v.as_hash()) {
@@ -316,7 +310,7 @@ fn load_services(path: &Path, k: &str, v: &Yaml) -> Result<koru_service::Service
             match sk {
                 "server_socket" => {
                     if let Some(v) = sv.as_str() {
-                        service.server_socket = v.to_string();
+                        service.server_socket = to_env_string(v);
                         continue;
                     }
                 }
@@ -346,43 +340,45 @@ fn to_env_string_list(v: &[Yaml]) -> Option<Vec<String>> {
     let ans: Result<Vec<String>, ()> = v
         .iter()
         .map(|v| match v {
-            Yaml::String(v) => {
-                let v = v.to_string();
-                let mut prev = 0;
-                let mut result = String::new();
-                for (i, matched) in v.match_indices(|c| matches!(c, '$' | '}')) {
-                    match matched {
-                        "$" => {
-                            result += &v[prev..i];
-                            prev = i;
-                        }
-                        _ => {
-                            let var = &v[prev..i + 1];
-                            if prev + 1 < i && &var[0..2] == "${" {
-                                let name = &var[2..var.len() - 1];
-                                match env::var(name) {
-                                    Ok(v) => {
-                                        result += v.as_str();
-                                    }
-                                    Err(_) => {
-                                        result += var;
-                                    }
-                                }
-                            } else {
-                                result += var;
-                            }
-                            prev = i + 1;
-                        }
-                    }
-                }
-                result += &v[prev..];
-                Ok(result)
-            }
-            Yaml::Integer(_) => Ok(v.as_i64().ok_or(())?.to_string()),
+            Yaml::String(v) => Ok(to_env_string(v)),
+            Yaml::Integer(v) => Ok(v.to_string()),
             _ => Err(()),
         })
         .collect();
     ans.ok()
+}
+
+fn to_env_string(v: &str) -> String {
+    let v = v.to_string();
+    let mut prev = 0;
+    let mut result = String::new();
+    for (i, matched) in v.match_indices(|c| matches!(c, '$' | '}')) {
+        match matched {
+            "$" => {
+                result += &v[prev..i];
+                prev = i;
+            }
+            _ => {
+                let var = &v[prev..i + 1];
+                if prev + 1 < i && &var[0..2] == "${" {
+                    let name = &var[2..var.len() - 1];
+                    match env::var(name) {
+                        Ok(v) => {
+                            result += v.as_str();
+                        }
+                        Err(_) => {
+                            result += var;
+                        }
+                    }
+                } else {
+                    result += var;
+                }
+                prev = i + 1;
+            }
+        }
+    }
+    result += &v[prev..];
+    result
 }
 
 fn load_location(domain: &Domain, path: &Path, k: &str, v: &Yaml) -> Result<Arc<DynLocation>, ConfError> {

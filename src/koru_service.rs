@@ -121,14 +121,13 @@ pub async fn websocket(
 pub async fn pass(mut req: Request<Body>, ip_addr: IpAddr, server_socket: &str) -> crate::Result<Response<Body>> {
     convert_req(&mut req, &ip_addr);
 
-    *req.uri_mut() = format!(
+    let uri_str = format!(
         "http://{}{}",
         server_socket,
         req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/")
-    )
-    .parse()?;
+    );
+    *req.uri_mut() = uri_str.parse()?;
 
     let client = Client::new();
-
     Ok(client.request(req).await?)
 }

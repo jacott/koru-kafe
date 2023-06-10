@@ -157,7 +157,6 @@ pub struct Redirect {
 impl Location for Redirect {
     async fn connect(&self, req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
         let mut parts = req.uri().clone().into_parts();
-        eprintln!("DEBUG parts {:?}", parts);
 
         if let Some(v) = &self.scheme {
             parts.scheme = Some(uri::Scheme::from_str(v)?);
@@ -185,8 +184,6 @@ impl Location for Redirect {
         } else {
             curr_pq
         });
-
-        eprintln!("DEBUG parts {:?}", parts);
 
         Ok(Response::builder()
             .status(self.code)
