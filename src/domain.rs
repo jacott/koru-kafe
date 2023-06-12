@@ -15,7 +15,7 @@ pub type RcDynLocation = Arc<DynLocation>;
 pub type DomainMap = HashMap<String, Arc<Domain>>;
 pub type ServiceMap = HashMap<String, Arc<koru_service::Service>>;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Domain {
     pub root: String,
     pub name: String,

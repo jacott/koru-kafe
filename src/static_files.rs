@@ -6,6 +6,7 @@ use tokio::fs;
 #[derive(Debug)]
 pub struct Opts {
     pub root: String,
+    pub default_mime: mime::Mime,
     pub cache_control: String,
 }
 
@@ -20,7 +21,9 @@ pub async fn send_file(req: Request<Body>, opts: &Opts) -> crate::Result<Respons
     path += url_path;
     let len = path.len();
 
-    let mime_type = mime_guess::from_path(&path).first_or_text_plain().to_string();
+    let mime_type = mime_guess::from_path(&path)
+        .first_or(opts.default_mime.clone())
+        .to_string();
 
     let encodings = if let Some(v) = headers.get(header::ACCEPT_ENCODING) { v.as_bytes() } else { b"" };
 
@@ -198,6 +201,7 @@ mod tests {
     async fn send_file_cached() -> crate::Result<()> {
         let opts = Opts {
             root: "tests/assets".to_string(),
+            default_mime: mime::TEXT_CSV,
             cache_control: "max-age=2000".to_string(),
         };
 
@@ -206,8 +210,27 @@ mod tests {
         let res = super::send_file(req, &opts).await.unwrap();
 
         assert_eq!(res.status().as_u16(), 200);
+        assert_eq!(res.headers().get(header::CONTENT_TYPE).unwrap(), "text/plain");
         assert_eq!(res.headers().get(header::CONTENT_ENCODING).unwrap(), "br");
         assert_eq!(res.headers().get(header::CACHE_CONTROL).unwrap(), "max-age=2000");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn default_mime() -> crate::Result<()> {
+        let opts = Opts {
+            root: "tests/assets".to_string(),
+            default_mime: mime::TEXT_HTML,
+            cache_control: "max-age=2000".to_string(),
+        };
+
+        let req = Request::builder().uri("/no-suffix").body(Body::empty()).unwrap();
+
+        let res = super::send_file(req, &opts).await.unwrap();
+
+        assert_eq!(res.status().as_u16(), 200);
+        assert_eq!(res.headers().get(header::CONTENT_TYPE).unwrap(), "text/html");
 
         Ok(())
     }

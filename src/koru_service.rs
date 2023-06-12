@@ -10,7 +10,7 @@ use tokio::{net::TcpStream, process::Command, sync::Mutex};
 
 use crate::Result;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Service {
     pub server_socket: String,
     pub cmd: Option<(String, String, Vec<String>)>,

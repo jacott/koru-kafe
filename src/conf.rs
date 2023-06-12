@@ -7,11 +7,13 @@ use crate::{
 use directories::ProjectDirs;
 use hyper::StatusCode;
 use lazy_static::lazy_static;
+use mime_guess::Mime;
 use serde_derive::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     env, fs, io,
     path::{Path, PathBuf},
+    str::FromStr,
     sync::{Arc, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -128,8 +130,14 @@ impl LocationBuilder for FileBuilder {
     fn yaml_to_location(&self, domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
         match yaml.as_hash() {
             Some(h) => {
+                let default_mime = yaml_get_opt_string(h, "default_mime")?;
+                let default_mime = match default_mime {
+                    Some(v) => Mime::from_str(v.as_str()).map_err(|v| v.to_string())?,
+                    None => mime::TEXT_PLAIN,
+                };
                 let opts = static_files::Opts {
                     root: yaml_get_opt_string(h, "root")?.unwrap_or_else(|| domain.root.clone()),
+                    default_mime,
                     cache_control: yaml_get_opt_string(h, "cache_control")?.unwrap_or_else(|| "no-cache".to_string()),
                 };
                 Ok(Arc::new(domain::File { opts }))
