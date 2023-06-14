@@ -92,7 +92,7 @@ fn read_time(value: &Option<&HeaderValue>) -> Option<SystemTime> {
 
 fn can_compress(enc: &[u8], encodings: &[u8]) -> bool {
     if encodings.is_empty() {
-        return true;
+        return false;
     }
     let mut iter = encodings.iter();
 
@@ -184,6 +184,7 @@ mod tests {
         assert!(!can_compress(b"br", b"abc,gzip,*;q=0,foo"));
         assert!(!can_compress(b"br", b"abc,gzip,br   ;q=0"));
         assert!(!can_compress(b"br", b"abc,gzip,*;q=0"));
+        assert!(!can_compress(b"br", b""));
 
         assert!(can_compress(b"br", b"br"));
         assert!(can_compress(b"br", b"abc,br;"));
@@ -192,7 +193,6 @@ mod tests {
         assert!(can_compress(b"br", b"abc, Br ;   q=0.001,gzip"));
         assert!(can_compress(b"br", b"abc,Br;q=0.001,gzip"));
         assert!(can_compress(b"br", b"abc,Br;q=1,gzip"));
-        assert!(can_compress(b"br", b""));
         assert!(can_compress(b"br", b"abc,gzip,*"));
         assert!(can_compress(b"br", b"abc,gzip,*;q=0.1"));
     }
@@ -205,7 +205,11 @@ mod tests {
             cache_control: "max-age=2000".to_string(),
         };
 
-        let req = Request::builder().uri("/hello.txt").body(Body::empty()).unwrap();
+        let req = Request::builder()
+            .uri("/hello.txt")
+            .header(header::ACCEPT_ENCODING, "*")
+            .body(Body::empty())
+            .unwrap();
 
         let res = super::send_file(req, &opts).await.unwrap();
 
