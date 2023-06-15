@@ -1,6 +1,6 @@
 use httpdate::HttpDate;
 use hyper::{header, http::HeaderValue, Body, Method, Request, Response};
-use std::{io, time::SystemTime};
+use std::{io, os::linux::fs::MetadataExt, time::SystemTime};
 use tokio::fs;
 
 #[derive(Debug)]
@@ -46,6 +46,7 @@ pub async fn send_file(req: Request<Body>, opts: &Opts) -> crate::Result<Respons
 
             let mut rb = Response::builder()
                 .header(header::CONTENT_TYPE, &mime_type)
+                .header(header::CONTENT_LENGTH, md.st_size())
                 .header(header::LAST_MODIFIED, HttpDate::from(last_modified).to_string())
                 .header(header::CACHE_CONTROL, &opts.cache_control);
             if !unencryped {
@@ -217,6 +218,7 @@ mod tests {
         assert_eq!(res.headers().get(header::CONTENT_TYPE).unwrap(), "text/plain");
         assert_eq!(res.headers().get(header::CONTENT_ENCODING).unwrap(), "br");
         assert_eq!(res.headers().get(header::CACHE_CONTROL).unwrap(), "max-age=2000");
+        assert_eq!(res.headers().get(header::CONTENT_LENGTH).unwrap(), "17");
 
         Ok(())
     }
