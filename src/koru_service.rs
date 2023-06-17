@@ -1,5 +1,6 @@
-use fastwebsockets::{handshake, upgrade, FragmentCollector, Frame, OpCode};
+use futures_util::{sink::SinkExt, stream::StreamExt};
 use hyper::{http::HeaderValue, Body, Client, Request, Response, Version};
+use hyper_tungstenite::HyperWebsocket;
 use std::{
     future::Future,
     io,
@@ -72,50 +73,59 @@ where
     }
 }
 
-pub async fn websocket(
-    fut: upgrade::UpgradeFut,
-    mut req: Request<Body>,
-    from_addr: &IpAddr,
-    to_addr: &str,
-) -> Result<()> {
+pub async fn websocket(fut: HyperWebsocket, mut req: Request<Body>, from_addr: &IpAddr, to_addr: &str) -> Result<()> {
     convert_req(&mut req, from_addr);
-
     let stream = TcpStream::connect(to_addr).await?;
-    let (ws_w, _) = handshake::client(&SpawnExecutor, req, stream).await?;
-    let mut ws_w = FragmentCollector::new(ws_w);
 
-    let mut ws_r = fut.await?;
-    ws_r.set_writev(true);
-    ws_r.set_auto_close(true);
-    ws_r.set_auto_pong(true);
-    let mut ws_r = FragmentCollector::new(ws_r);
+    let mut req = req.map(|_| ());
 
-    loop {
-        tokio::select! {
-            frame = ws_r.read_frame() => {
-                let frame = frame?;
-                match frame.opcode {
-                    OpCode::Close => break,
-                    OpCode::Text | OpCode::Binary => {
-                        let frame = Frame::new(true, frame.opcode, None, frame.payload);
-                        ws_w.write_frame(frame).await?;
+    let uri_str = format!(
+        "ws://{}{}",
+        to_addr,
+        req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/")
+    );
+    *req.uri_mut() = uri_str.parse()?;
+
+    let (ws_w, _) = tokio_tungstenite::client_async(req, stream).await?;
+
+    let ws_r = fut.await?;
+    let (mut wsc_s, mut wsc_r) = StreamExt::split(ws_r);
+
+    let (mut wss_s, mut wss_r) = StreamExt::split(ws_w);
+
+    tokio::spawn(async move {
+        while let Some(msg) = wsc_r.next().await {
+            match msg {
+                Ok(msg) => {
+                    if let Err(err) = wss_s.send(msg).await {
+                        eprintln!("close socket - {:?}", err);
+                        break;
                     }
-                    _ => {}
                 }
-            }
-            frame = ws_w.read_frame() => {
-                let frame = frame?;
-                match frame.opcode {
-                    OpCode::Close => break,
-                    OpCode::Text | OpCode::Binary => {
-                        let frame = Frame::new(true, frame.opcode, None, frame.payload);
-                        ws_r.write_frame(frame).await?;
-                    }
-                    _ => {}
+                Err(err) => {
+                    eprintln!("close socket - {:?}", err);
+                    break;
                 }
             }
         }
-    }
+    });
+
+    tokio::spawn(async move {
+        while let Some(msg) = wss_r.next().await {
+            match msg {
+                Ok(msg) => {
+                    if let Err(err) = wsc_s.send(msg).await {
+                        eprintln!("close socket - {:?}", err);
+                        break;
+                    }
+                }
+                Err(err) => {
+                    eprintln!("close socket - {:?}", err);
+                    break;
+                }
+            }
+        }
+    });
 
     Ok(())
 }

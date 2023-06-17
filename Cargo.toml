@@ -9,7 +9,6 @@ publish = false
 [dependencies]
 tokio = { version = "1.28.2", features = ["full"] }
 hyper = { version = "0.14.26", features = ["http1", "http2", "server", "client", "runtime", "tcp", "stream"] }
-fastwebsockets = { version = "0.4.2", features = ["upgrade"] }
 mime_guess = "2.0.4"
 bytes = "1.4.0"
 directories = "5.0.1"
@@ -25,6 +24,9 @@ env_logger = "0.10.0"
 log = "0.4.18"
 httpdate = "1.0.2"
 mime = "0.3.17"
+hyper-tungstenite = "0.10.0"
+tokio-tungstenite = "0.19.0"
+futures-util = "0.3.28"
 
 [dev-dependencies]
 tokio-test = "0.4.2"

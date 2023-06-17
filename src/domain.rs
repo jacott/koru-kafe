@@ -236,15 +236,16 @@ pub struct WebsocketProxy {
 #[async_trait]
 impl Location for WebsocketProxy {
     async fn connect(&self, mut req: Request<Body>, ip_addr: IpAddr) -> crate::Result<Response<Body>> {
-        let (response, fut) = fastwebsockets::upgrade::upgrade(&mut req)?;
+        let (response, ws) = hyper_tungstenite::upgrade(&mut req, None)?;
 
         let server_socket = self.server_socket.clone();
 
         tokio::task::spawn(async move {
-            if let Err(e) =
-                tokio::task::unconstrained(koru_service::websocket(fut, req, &ip_addr, &server_socket)).await
+            if let Err(e) = tokio::task::unconstrained(koru_service::websocket(ws, req, &ip_addr, &server_socket)).await
             {
                 eprintln!("Error in websocket connection: {}", e);
+            } else {
+                eprintln!("Websocket close");
             }
         });
 
