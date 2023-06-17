@@ -1,4 +1,4 @@
-use fastwebsockets::{handshake, upgrade, Frame, OpCode};
+use fastwebsockets::{handshake, upgrade, FragmentCollector, Frame, OpCode};
 use hyper::{http::HeaderValue, Body, Client, Request, Response, Version};
 use std::{
     future::Future,
@@ -80,13 +80,15 @@ pub async fn websocket(
 ) -> Result<()> {
     convert_req(&mut req, from_addr);
 
+    let stream = TcpStream::connect(to_addr).await?;
+    let (ws_w, _) = handshake::client(&SpawnExecutor, req, stream).await?;
+    let mut ws_w = FragmentCollector::new(ws_w);
+
     let mut ws_r = fut.await?;
     ws_r.set_writev(true);
     ws_r.set_auto_close(true);
     ws_r.set_auto_pong(true);
-
-    let stream = TcpStream::connect(to_addr).await?;
-    let (mut ws_w, _) = handshake::client(&SpawnExecutor, req, stream).await?;
+    let mut ws_r = FragmentCollector::new(ws_r);
 
     loop {
         tokio::select! {
