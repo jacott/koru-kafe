@@ -18,6 +18,7 @@ async fn handler(
     let path = req.uri().path();
 
     if let Some(domain) = domain {
+        println!("{} {}", &domain.name, &path);
         match domain.find_location(path) {
             None => domain.handle_error(Box::new(io::Error::new(io::ErrorKind::NotFound, "Not Found"))),
             Some(loc) => match loc.convert(&domain, &mut req, &ip_addr) {
@@ -36,7 +37,7 @@ async fn handler(
             },
         }
     } else {
-        eprintln!("{} 404", &path);
+        eprintln!("{} 404 - no domain handler", &path);
         Ok(Response::builder().status(404).body(Body::from("Not found\n"))?)
     }
 }
