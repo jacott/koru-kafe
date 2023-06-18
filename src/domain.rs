@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use hyper::{
+    client::HttpConnector,
     header,
     http::uri::{self, PathAndQuery},
-    Body, Request, Response, StatusCode, Uri,
+    Body, Client, Request, Response, StatusCode, Uri,
 };
 use radix_trie::Trie;
 use std::{any::Any, collections::HashMap, error::Error, fmt::Display, io, net::IpAddr, str::FromStr, sync::Arc};
@@ -38,8 +39,8 @@ impl Domain {
     pub fn handle_error(&self, err: crate::Error) -> crate::Result<Response<Body>> {
         if let Some(e) = err.downcast_ref::<io::Error>() {
             return match e.kind() {
-                io::ErrorKind::PermissionDenied => self.client_error(400),
-                io::ErrorKind::NotFound => self.client_error(404),
+                io::ErrorKind::PermissionDenied => self.client_error(400, e.to_string()),
+                io::ErrorKind::NotFound => self.client_error(404, e.to_string()),
                 io::ErrorKind::ConnectionRefused => self.server_error(502, e.to_string()),
                 _ => self.server_error(500, e.to_string()),
             };
@@ -47,7 +48,7 @@ impl Domain {
 
         if let Some(e) = err.downcast_ref::<hyper::Error>() {
             if e.is_user() {
-                return self.client_error(400);
+                return self.client_error(400, e.to_string());
             }
             if e.is_connect() {
                 return self.server_error(502, e.to_string());
@@ -58,8 +59,8 @@ impl Domain {
         self.server_error(500, err.to_string())
     }
 
-    pub fn client_error(&self, code: u16) -> crate::Result<Response<Body>> {
-        let msg = format!("{} Client error\n", code);
+    pub fn client_error(&self, code: u16, message: String) -> crate::Result<Response<Body>> {
+        let msg = format!("{} Client error {}\n", code, message);
         eprintln!("{}", &msg);
         Ok(Response::builder().status(code).body(msg.into())?)
     }
@@ -215,12 +216,13 @@ impl Location for File {
 #[derive(Debug)]
 pub struct HttpProxy {
     pub server_socket: String,
+    pub(crate) client: Client<HttpConnector>,
 }
 
 #[async_trait]
 impl Location for HttpProxy {
     async fn connect(&self, req: Request<Body>, ip_addr: IpAddr) -> crate::Result<Response<Body>> {
-        koru_service::pass(req, ip_addr, &self.server_socket).await
+        koru_service::pass(req, ip_addr, self.client.clone(), &self.server_socket).await
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -241,11 +243,8 @@ impl Location for WebsocketProxy {
         let server_socket = self.server_socket.clone();
 
         tokio::task::spawn(async move {
-            if let Err(e) = tokio::task::unconstrained(koru_service::websocket(ws, req, &ip_addr, &server_socket)).await
-            {
+            if let Err(e) = koru_service::websocket(ws, req, &ip_addr, &server_socket).await {
                 eprintln!("Error in websocket connection: {}", e);
-            } else {
-                eprintln!("Websocket close");
             }
         });
 

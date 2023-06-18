@@ -5,7 +5,7 @@ use crate::{
     static_files,
 };
 use directories::ProjectDirs;
-use hyper::StatusCode;
+use hyper::{Client, StatusCode};
 use lazy_static::lazy_static;
 use mime_guess::Mime;
 use serde_derive::{Deserialize, Serialize};
@@ -154,6 +154,7 @@ impl LocationBuilder for HttpProxyBuilder {
             Some(s) => match domain.services.get(&s.to_string()) {
                 Some(proxy) => Ok(Arc::new(domain::HttpProxy {
                     server_socket: proxy.server_socket.clone(),
+                    client: Client::builder().set_host(false).build_http(),
                 })),
                 None => Err(format!("Proxy not found! {}", s)),
             },
@@ -638,11 +639,8 @@ async fn load_and_start(
 
             set.spawn(async move {
                 if let Some(d) = domains.values().next() {
-                    let res = if d.cert_path.is_empty() {
-                        listener::listen(addr, domains, rx).await
-                    } else {
-                        listener::tls_listen(addr, domains, rx).await
-                    };
+                    let is_tls = !d.cert_path.is_empty();
+                    let res = listener::listen(addr, domains, rx, is_tls).await;
                     if let Err(err) = res {
                         eprintln!("Listen err {:?}", err);
                     }

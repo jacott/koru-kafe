@@ -5,7 +5,7 @@ use hyper::{Body, Request, Response};
 use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 // use tokio::io::AsyncWriteExt; // TODO when acceptor.take_io is released
 use tokio::net::TcpListener;
 use tokio_rustls::{rustls, LazyConfigAcceptor};
@@ -18,7 +18,6 @@ async fn handler(
     let path = req.uri().path();
 
     if let Some(domain) = domain {
-        println!("{} {}", &domain.name, &path);
         match domain.find_location(path) {
             None => domain.handle_error(Box::new(io::Error::new(io::ErrorKind::NotFound, "Not Found"))),
             Some(loc) => match loc.convert(&domain, &mut req, &ip_addr) {
@@ -50,45 +49,83 @@ fn with_domain(host: Option<&str>, domains: &DomainMap) -> Option<Arc<Domain>> {
     }
 }
 
-pub async fn listen(addr: String, domains: DomainMap, mut reload: mpsc::Receiver<DomainMap>) -> crate::Result<()> {
+pub async fn listen(
+    addr: String,
+    domains: DomainMap,
+    mut reload: mpsc::Receiver<DomainMap>,
+    is_tls: bool,
+) -> crate::Result<()> {
     let listener = TcpListener::bind(&addr)
         .await
         .map_err(|e| io::Error::new(e.kind(), format!("listen on {} failed - {}", addr, e)))?;
 
-    let mut domains = Arc::new(domains);
+    let domains = Arc::new(RwLock::new(domains));
+    let d2 = domains.clone();
+
+    tokio::spawn(async move {
+        while let Some(new_domains) = reload.recv().await {
+            *d2.write().await = new_domains;
+        }
+    });
+
     loop {
-        tokio::select! {
-            new_domains = reload.recv() => {
-                match new_domains {
-                    Some(mut new_domains) => {
-                        for (k, v) in domains.iter() {
-                            if !new_domains.contains_key(k) {
-                                new_domains.insert(k.to_string(), v.clone());
+        let (stream, peer_addr) = listener.accept().await?;
+        let domains = domains.read().await.clone();
+        let ip_addr = peer_addr.ip();
+        if is_tls {
+            tokio::spawn(async move {
+                let acceptor = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream);
+                // futures_util::pin_mut!(acceptor);
+
+                match acceptor // .as_mut()
+                    .await
+                {
+                    Ok(start) => {
+                        let client_hello = start.client_hello();
+                        let host = client_hello.server_name();
+
+                        if let Some(domain) = with_domain(host, &domains) {
+                            match start.into_stream(domain.tls_config.clone().expect("TLS config")).await {
+                                Ok(stream) => {
+                                    let res = Http::new()
+                                        .serve_connection(
+                                            stream,
+                                            service_fn(move |req| handler(req, ip_addr, Some(domain.clone()))),
+                                        )
+                                        .with_upgrades()
+                                        .await;
+                                    print_hyper_error(res);
+                                }
+                                Err(err) => {
+                                    handle_error(
+                                        err, ip_addr, // , acceptor
+                                    );
+                                }
                             }
                         }
-                        domains = Arc::new(new_domains)
-                    },
-                    None => return Ok(())
+                    }
+                    Err(err) => {
+                        handle_error(
+                            err, ip_addr, // , acceptor
+                        );
+                    }
                 }
-            }
-            conn = listener.accept() => {
-                let (stream, peer_addr) = conn?;
-                let domains = domains.clone();
-                let ip_addr = peer_addr.ip();
-                tokio::spawn(async move {
-                    let res = Http::new()
-                        .serve_connection(
-                            stream,
-                            service_fn(move |req| {
-                                let host = crate::host_from_req(&req);
-                                let domain = with_domain(host, &domains);
-                                handler(req, ip_addr, domain)
-                            }),
-                        )
-                        .with_upgrades().await;
-                    print_hyper_error(res);
-                });
-            }
+            });
+        } else {
+            tokio::spawn(async move {
+                let res = Http::new()
+                    .serve_connection(
+                        stream,
+                        service_fn(move |req| {
+                            let host = crate::host_from_req(&req);
+                            let domain = with_domain(host, &domains);
+                            handler(req, ip_addr, domain)
+                        }),
+                    )
+                    .with_upgrades()
+                    .await;
+                print_hyper_error(res);
+            });
         }
     }
 }
@@ -103,65 +140,6 @@ fn print_hyper_error(res: Result<(), hyper::Error>) {
                         eprintln!("An error occurred: {:?}", e);
                     }
                 }
-            }
-        }
-    }
-}
-
-pub async fn tls_listen(addr: String, domains: DomainMap, mut reload: mpsc::Receiver<DomainMap>) -> crate::Result<()> {
-    let listener = TcpListener::bind(&addr)
-        .await
-        .map_err(|e| io::Error::new(e.kind(), format!("listen on {} failed - {}", addr, e)))?;
-
-    let mut domains = Arc::new(domains);
-
-    loop {
-        tokio::select! {
-            new_domains = reload.recv() => {
-                match new_domains {
-                    Some(new_domains) => domains = Arc::new(new_domains),
-                    None => return Ok(())
-                }
-            }
-            conn = listener.accept() => {
-                let (stream, peer_addr) = conn?;
-                let domains = domains.clone();
-                let ip_addr = peer_addr.ip();
-                tokio::spawn(async move {
-                    let acceptor = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream);
-                    // futures_util::pin_mut!(acceptor);
-
-                    match acceptor // .as_mut()
-                        .await
-                    {
-                        Ok(start) => {
-                            let client_hello = start.client_hello();
-                            let host = client_hello.server_name();
-
-                            if let Some(domain) = with_domain(host, &domains) {
-                                match start.into_stream(domain.tls_config.clone().expect("TLS config")).await {
-                                    Ok(stream) => {
-                                        let res = Http::new()
-                                            .serve_connection(
-                                                stream,
-                                                service_fn(move |req| handler(req, ip_addr, Some(domain.clone()))),
-                                            )
-                                            .with_upgrades().await;
-                                        print_hyper_error(res);
-                                    }
-                                    Err(err) => {
-                                        handle_error(err, ip_addr// , acceptor
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            handle_error(err, ip_addr// , acceptor
-                            );
-                        }
-                    }
-                });
             }
         }
     }

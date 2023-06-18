@@ -9,21 +9,19 @@ async fn main() -> Result<()> {
     let cdir = conf::default_cfg()?;
 
     let (tx, rx) = mpsc::channel(1);
+    let finished = conf::load_and_monitor(&cdir, rx).await?;
 
-    let mut finished = conf::load_and_monitor(&cdir, rx).await?;
+    let mut sig = signal(SignalKind::user_defined1())?;
 
-    let mut sig = signal(SignalKind::hangup())?;
-
-    loop {
-        tokio::select! {
-            _ = &mut finished => {
+    tokio::spawn(async move {
+        while sig.recv().await.is_some() {
+            if tx.send(()).await.is_err() {
                 break;
             }
-            _ = sig.recv() => {
-                tx.send(()).await?;
-            }
         }
-    }
+    });
+
+    finished.await?;
 
     Ok(())
 }

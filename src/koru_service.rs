@@ -1,8 +1,7 @@
 use futures_util::{sink::SinkExt, stream::StreamExt};
-use hyper::{http::HeaderValue, Body, Client, Request, Response, Version};
+use hyper::{client::HttpConnector, http::HeaderValue, Body, Client, Request, Response, Version};
 use hyper_tungstenite::HyperWebsocket;
 use std::{
-    future::Future,
     io,
     net::IpAddr,
     time::{Duration, SystemTime},
@@ -50,7 +49,7 @@ impl Service {
     }
 }
 
-fn convert_req(req: &mut Request<Body>, ip_addr: &IpAddr) {
+fn convert_req(req: &mut Request<Body>, ip_addr: &IpAddr, scheme: &str, auth: &str) -> Result<()> {
     *req.version_mut() = Version::HTTP_11;
 
     let headers = req.headers_mut();
@@ -58,33 +57,28 @@ fn convert_req(req: &mut Request<Body>, ip_addr: &IpAddr) {
     if let Ok(v) = HeaderValue::from_str(ip_addr.to_string().as_str()) {
         headers.insert("X-Real-IP", v);
     }
-}
-
-// Tie hyper's executor to tokio runtime
-struct SpawnExecutor;
-
-impl<Fut> hyper::rt::Executor<Fut> for SpawnExecutor
-where
-    Fut: Future + Send + 'static,
-    Fut::Output: Send + 'static,
-{
-    fn execute(&self, fut: Fut) {
-        tokio::task::spawn(fut);
-    }
-}
-
-pub async fn websocket(fut: HyperWebsocket, mut req: Request<Body>, from_addr: &IpAddr, to_addr: &str) -> Result<()> {
-    convert_req(&mut req, from_addr);
-    let stream = TcpStream::connect(to_addr).await?;
-
-    let mut req = req.map(|_| ());
 
     let uri_str = format!(
-        "ws://{}{}",
-        to_addr,
+        "{}://{}{}",
+        scheme,
+        auth,
         req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/")
     );
     *req.uri_mut() = uri_str.parse()?;
+
+    Ok(())
+}
+
+pub async fn websocket(
+    fut: HyperWebsocket,
+    mut req: Request<Body>,
+    from_addr: &IpAddr,
+    to_authority: &str,
+) -> Result<()> {
+    convert_req(&mut req, from_addr, "ws", to_authority)?;
+    let stream = TcpStream::connect(to_authority).await?;
+
+    let req = req.map(|_| ());
 
     let (ws_w, _) = tokio_tungstenite::client_async(req, stream).await?;
 
@@ -130,16 +124,13 @@ pub async fn websocket(fut: HyperWebsocket, mut req: Request<Body>, from_addr: &
     Ok(())
 }
 
-pub async fn pass(mut req: Request<Body>, ip_addr: IpAddr, server_socket: &str) -> crate::Result<Response<Body>> {
-    convert_req(&mut req, &ip_addr);
+pub async fn pass(
+    mut req: Request<Body>,
+    ip_addr: IpAddr,
+    client: Client<HttpConnector>,
+    to_authority: &str,
+) -> crate::Result<Response<Body>> {
+    convert_req(&mut req, &ip_addr, "http", to_authority)?;
 
-    let uri_str = format!(
-        "http://{}{}",
-        server_socket,
-        req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/")
-    );
-    *req.uri_mut() = uri_str.parse()?;
-
-    let client = Client::new();
     Ok(client.request(req).await?)
 }
