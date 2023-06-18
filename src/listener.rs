@@ -15,11 +15,12 @@ async fn handler(
     ip_addr: IpAddr,
     domain: Option<Arc<Domain>>,
 ) -> crate::Result<Response<Body>> {
-    let path = req.uri().path();
-
     if let Some(domain) = domain {
-        match domain.find_location(path) {
-            None => domain.handle_error(Box::new(io::Error::new(io::ErrorKind::NotFound, "Not Found"))),
+        match domain.find_location(req.uri().path()) {
+            None => domain.handle_error(
+                Box::new(io::Error::new(io::ErrorKind::NotFound, "Not Found")),
+                req.uri().path(),
+            ),
             Some(loc) => match loc.convert(&domain, &mut req, &ip_addr) {
                 Ok(nl) => {
                     let loc = match nl {
@@ -29,14 +30,14 @@ async fn handler(
 
                     match loc.connect(req, ip_addr).await {
                         Ok(resp) => Ok(resp),
-                        Err(err) => domain.handle_error(err),
+                        Err(err) => domain.handle_error(err, ""),
                     }
                 }
-                Err(err) => domain.handle_error(err),
+                Err(err) => domain.handle_error(err, req.uri().path()),
             },
         }
     } else {
-        eprintln!("{} 404 - no domain handler", &path);
+        eprintln!("{} 404 - no domain handler", req.uri().path());
         Ok(Response::builder().status(404).body(Body::from("Not found\n"))?)
     }
 }

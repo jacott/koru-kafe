@@ -36,37 +36,37 @@ impl Domain {
             .cloned()
     }
 
-    pub fn handle_error(&self, err: crate::Error) -> crate::Result<Response<Body>> {
+    pub fn handle_error(&self, err: crate::Error, path: &str) -> crate::Result<Response<Body>> {
         if let Some(e) = err.downcast_ref::<io::Error>() {
             return match e.kind() {
-                io::ErrorKind::PermissionDenied => self.client_error(400, e.to_string()),
-                io::ErrorKind::NotFound => self.client_error(404, e.to_string()),
-                io::ErrorKind::ConnectionRefused => self.server_error(502, e.to_string()),
-                _ => self.server_error(500, e.to_string()),
+                io::ErrorKind::PermissionDenied => self.client_error(400, e.to_string(), path),
+                io::ErrorKind::NotFound => self.client_error(404, e.to_string(), path),
+                io::ErrorKind::ConnectionRefused => self.server_error(502, e.to_string(), path),
+                _ => self.server_error(500, e.to_string(), path),
             };
         }
 
         if let Some(e) = err.downcast_ref::<hyper::Error>() {
             if e.is_user() {
-                return self.client_error(400, e.to_string());
+                return self.client_error(400, e.to_string(), path);
             }
             if e.is_connect() {
-                return self.server_error(502, e.to_string());
+                return self.server_error(502, e.to_string(), path);
             }
-            return self.server_error(500, e.to_string());
+            return self.server_error(500, e.to_string(), path);
         }
 
-        self.server_error(500, err.to_string())
+        self.server_error(500, err.to_string(), path)
     }
 
-    pub fn client_error(&self, code: u16, message: String) -> crate::Result<Response<Body>> {
-        let msg = format!("{} Client error {}\n", code, message);
+    pub fn client_error(&self, code: u16, message: String, path: &str) -> crate::Result<Response<Body>> {
+        let msg = format!("{} {}{} Client error {}\n", code, self.name, path, message);
         eprintln!("{}", &msg);
         Ok(Response::builder().status(code).body(msg.into())?)
     }
 
-    pub fn server_error(&self, code: u16, message: String) -> crate::Result<Response<Body>> {
-        let msg = format!("{} Server error\n{}\n", code, message);
+    pub fn server_error(&self, code: u16, message: String, path: &str) -> crate::Result<Response<Body>> {
+        let msg = format!("{} {}{} Server error\n{}\n", code, self.name, path, message);
         eprintln!("{}", msg);
 
         Ok(Response::builder().status(code).body(msg.into())?)
