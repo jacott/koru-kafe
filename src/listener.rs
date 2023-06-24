@@ -4,10 +4,11 @@ use hyper::service::service_fn;
 use hyper::{Body, Request, Response};
 use std::io;
 use std::net::IpAddr;
+use std::ops::DerefMut;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, RwLock};
-// use tokio::io::AsyncWriteExt; // TODO when acceptor.take_io is released
-use tokio::net::TcpListener;
 use tokio_rustls::{rustls, LazyConfigAcceptor};
 
 async fn handler(
@@ -76,11 +77,9 @@ pub async fn listen(
         if is_tls {
             tokio::spawn(async move {
                 let acceptor = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream);
-                // futures_util::pin_mut!(acceptor);
+                futures_util::pin_mut!(acceptor);
 
-                match acceptor // .as_mut()
-                    .await
-                {
+                match acceptor.as_mut().await {
                     Ok(start) => {
                         let client_hello = start.client_hello();
                         let host = client_hello.server_name();
@@ -98,17 +97,13 @@ pub async fn listen(
                                     print_hyper_error(res);
                                 }
                                 Err(err) => {
-                                    handle_error(
-                                        err, ip_addr, // , acceptor
-                                    );
+                                    handle_error(err, ip_addr, acceptor.deref_mut()).await;
                                 }
                             }
                         }
                     }
                     Err(err) => {
-                        handle_error(
-                            err, ip_addr, // , acceptor
-                        );
+                        handle_error(err, ip_addr, acceptor.deref_mut()).await;
                     }
                 }
             });
@@ -146,11 +141,8 @@ fn print_hyper_error(res: Result<(), hyper::Error>) {
     }
 }
 
-fn handle_error(
-    err: io::Error,
-    ip_addr: IpAddr, // , acceptor: LazyConfigAcceptor<TcpStream>
-) {
-    let _msg = match err.kind() {
+async fn handle_error(err: io::Error, ip_addr: IpAddr, acceptor: &mut LazyConfigAcceptor<TcpStream>) {
+    let msg = match err.kind() {
         io::ErrorKind::InvalidInput => {
             eprintln!("{:?} - 400 Not a TLS handshake", ip_addr);
             "HTTP/1.1 400 Expected an HTTPS request\r\n\r\n\r\nExpected an HTTPS request\n".to_string()
@@ -160,9 +152,9 @@ fn handle_error(
             format!("HTTP/1.1 500 Server Error\r\n\r\n\r\n{:?}\n", err)
         }
     };
-    // if let Some(mut stream) = acceptor.take_io() {
-    //     stream.write_all(msg.as_bytes()).await.unwrap();
-    // }
+    if let Some(mut stream) = acceptor.take_io() {
+        stream.write_all(msg.as_bytes()).await.unwrap();
+    }
 }
 
 #[cfg(test)]
