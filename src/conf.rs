@@ -23,7 +23,7 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_rustls::rustls;
-use yaml_rust::{yaml, Yaml, YamlLoader};
+pub use yaml_rust::{yaml, Yaml, YamlLoader};
 
 pub type ListernerMap = HashMap<String, domain::DomainMap>;
 

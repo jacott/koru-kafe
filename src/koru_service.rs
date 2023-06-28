@@ -1,6 +1,9 @@
-use futures_util::{sink::SinkExt, stream::StreamExt};
+use futures_util::{
+    sink::SinkExt,
+    stream::{SplitSink, SplitStream, StreamExt},
+};
 use hyper::{client::HttpConnector, http::HeaderValue, Body, Client, Request, Response, Version};
-use hyper_tungstenite::HyperWebsocket;
+use hyper_tungstenite::{tungstenite::Message, HyperWebsocket, WebSocketStream};
 use std::{
     io,
     net::IpAddr,
@@ -69,23 +72,11 @@ fn convert_req(req: &mut Request<Body>, ip_addr: &IpAddr, scheme: &str, auth: &s
     Ok(())
 }
 
-pub async fn websocket(
-    fut: HyperWebsocket,
-    mut req: Request<Body>,
-    from_addr: &IpAddr,
-    to_authority: &str,
-) -> Result<()> {
-    convert_req(&mut req, from_addr, "ws", to_authority)?;
-    let stream = TcpStream::connect(to_authority).await?;
-
-    let req = req.map(|_| ());
-
-    let (ws_w, _) = tokio_tungstenite::client_async(req, stream).await?;
+pub async fn websocket(fut: HyperWebsocket, req: Request<Body>, from_addr: &IpAddr, to_authority: &str) -> Result<()> {
+    let (mut wss_s, mut wss_r) = ws_connect_server(req, from_addr, to_authority).await?;
 
     let ws_r = fut.await?;
-    let (mut wsc_s, mut wsc_r) = StreamExt::split(ws_r);
-
-    let (mut wss_s, mut wss_r) = StreamExt::split(ws_w);
+    let (mut wsc_s, mut wsc_r) = ws_r.split();
 
     tokio::spawn(async move {
         while let Some(msg) = wsc_r.next().await {
@@ -122,6 +113,24 @@ pub async fn websocket(
     });
 
     Ok(())
+}
+
+pub async fn ws_connect_server(
+    mut req: Request<Body>,
+    from_addr: &IpAddr,
+    to_authority: &str,
+) -> Result<(
+    SplitSink<WebSocketStream<TcpStream>, Message>,
+    SplitStream<WebSocketStream<TcpStream>>,
+)> {
+    convert_req(&mut req, from_addr, "ws", to_authority)?;
+    let stream = TcpStream::connect(to_authority).await?;
+
+    let req = req.map(|_| ());
+
+    let (ws_w, _) = tokio_tungstenite::client_async(req, stream).await?;
+
+    Ok(ws_w.split())
 }
 
 pub async fn pass(

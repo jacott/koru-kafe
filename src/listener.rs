@@ -87,14 +87,15 @@ pub async fn listen(
                         if let Some(domain) = with_domain(host, &domains) {
                             match start.into_stream(domain.tls_config.clone().expect("TLS config")).await {
                                 Ok(stream) => {
-                                    let res = Http::new()
-                                        .serve_connection(
-                                            stream,
-                                            service_fn(move |req| handler(req, ip_addr, Some(domain.clone()))),
-                                        )
-                                        .with_upgrades()
-                                        .await;
-                                    print_hyper_error(res);
+                                    handle_hyper_result(
+                                        Http::new()
+                                            .serve_connection(
+                                                stream,
+                                                service_fn(move |req| handler(req, ip_addr, Some(domain.clone()))),
+                                            )
+                                            .with_upgrades()
+                                            .await,
+                                    );
                                 }
                                 Err(err) => {
                                     handle_error(err, ip_addr, acceptor.deref_mut()).await;
@@ -109,24 +110,25 @@ pub async fn listen(
             });
         } else {
             tokio::spawn(async move {
-                let res = Http::new()
-                    .serve_connection(
-                        stream,
-                        service_fn(move |req| {
-                            let host = crate::host_from_req(&req);
-                            let domain = with_domain(host, &domains);
-                            handler(req, ip_addr, domain)
-                        }),
-                    )
-                    .with_upgrades()
-                    .await;
-                print_hyper_error(res);
+                handle_hyper_result(
+                    Http::new()
+                        .serve_connection(
+                            stream,
+                            service_fn(move |req| {
+                                let host = crate::host_from_req(&req);
+                                let domain = with_domain(host, &domains);
+                                handler(req, ip_addr, domain)
+                            }),
+                        )
+                        .with_upgrades()
+                        .await,
+                );
             });
         }
     }
 }
 
-fn print_hyper_error(res: Result<(), hyper::Error>) {
+fn handle_hyper_result(res: Result<(), hyper::Error>) {
     if let Err(e) = res {
         if let Some(e) = e.into_cause() {
             if let Ok(e) = e.downcast::<io::Error>() {
