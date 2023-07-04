@@ -25,7 +25,7 @@ async fn handler(
             Some(loc) => match loc.convert(&domain, &mut req, &ip_addr) {
                 Ok(nl) => {
                     let loc = match nl {
-                        None => loc,
+                        None => loc.to_owned(),
                         Some(loc) => loc,
                     };
 
@@ -85,7 +85,10 @@ pub async fn listen(
                         let host = client_hello.server_name();
 
                         if let Some(domain) = with_domain(host, &domains) {
-                            match start.into_stream(domain.tls_config.clone().expect("TLS config")).await {
+                            match start
+                                .into_stream(domain.tls_config().clone().expect("TLS config"))
+                                .await
+                            {
                                 Ok(stream) => {
                                     handle_hyper_result(
                                         Http::new()
@@ -170,26 +173,20 @@ mod tests {
         assert!(super::with_domain(Some("foo"), &dm).is_none());
         assert!(super::with_domain(None, &dm).is_none());
 
-        let any = Arc::new(Domain {
-            name: "*".to_string(),
-            ..Default::default()
-        });
+        let any = Arc::new(Domain::builder().name("*".to_string()).build());
         dm.insert("*".to_string(), any.clone());
         let ans = super::with_domain(Some("foo"), &dm);
         assert!(ans.is_some());
-        assert_eq!(ans.unwrap().name.as_str(), "*");
+        assert_eq!(ans.unwrap().name(), "*");
 
         dm.insert(
             "foo".to_string(),
-            Arc::new(Domain {
-                name: "foo".to_string(),
-                ..Default::default()
-            }),
+            Arc::new(Domain::builder().name("foo".to_string()).build()),
         );
         let ans = super::with_domain(Some("foo"), &dm);
         assert!(ans.is_some());
-        assert_eq!(ans.unwrap().name.as_str(), "foo");
+        assert_eq!(ans.unwrap().name(), "foo");
 
-        assert_eq!(&super::with_domain(None, &dm).unwrap().name, &any.name);
+        assert_eq!(&super::with_domain(None, &dm).unwrap().name(), &any.name());
     }
 }

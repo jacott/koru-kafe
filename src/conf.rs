@@ -70,7 +70,12 @@ pub trait LocationBuilder {
     fn yaml_to_location(&self, domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String>;
 }
 
+pub trait ConfBuilder {
+    fn load_yaml(&self, domain: &Domain, yaml: &Yaml) -> Result<(), String>;
+}
+
 type DynLocationBuilder = dyn LocationBuilder + Sync + Send;
+type DynConfBuilder = dyn ConfBuilder + Sync + Send;
 
 struct RewriteBuilder;
 impl LocationBuilder for RewriteBuilder {
@@ -136,7 +141,7 @@ impl LocationBuilder for FileBuilder {
                     None => mime::TEXT_PLAIN,
                 };
                 let opts = static_files::Opts {
-                    root: yaml_get_opt_string(h, "root")?.unwrap_or_else(|| domain.root.clone()),
+                    root: yaml_get_opt_string(h, "root")?.unwrap_or_else(|| domain.root().to_owned()),
                     default_mime,
                     cache_control: yaml_get_opt_string(h, "cache_control")?.unwrap_or_else(|| "no-cache".to_string()),
                 };
@@ -151,7 +156,7 @@ struct HttpProxyBuilder;
 impl LocationBuilder for HttpProxyBuilder {
     fn yaml_to_location(&self, domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
         match yaml.as_str() {
-            Some(s) => match domain.services.get(&s.to_string()) {
+            Some(s) => match domain.get_service(s) {
                 Some(proxy) => Ok(Arc::new(domain::HttpProxy {
                     server_socket: proxy.server_socket.clone(),
                     client: Client::builder().set_host(false).build_http(),
@@ -167,7 +172,7 @@ struct WebsocketProxyBuilder;
 impl LocationBuilder for WebsocketProxyBuilder {
     fn yaml_to_location(&self, domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
         match yaml.as_str() {
-            Some(s) => match domain.services.get(&s.to_string()) {
+            Some(s) => match domain.get_service(s) {
                 Some(proxy) => Ok(Arc::new(domain::WebsocketProxy {
                     server_socket: proxy.server_socket.clone(),
                 })),
@@ -200,6 +205,23 @@ impl LocationBuilders {
     }
 }
 
+pub struct ConfBuilders {
+    map: RwLock<HashMap<String, Arc<DynConfBuilder>>>,
+}
+impl ConfBuilders {
+    pub fn add(name: &str, builder: Arc<DynConfBuilder>) {
+        CONF_BUILDERS
+            .map
+            .write()
+            .expect("lock write to work")
+            .insert(name.to_string(), builder);
+    }
+
+    pub fn get(name: &str) -> Option<Arc<DynConfBuilder>> {
+        CONF_BUILDERS.map.read().expect("lock read to work").get(name).cloned()
+    }
+}
+
 lazy_static! {
     static ref LOCATION_BUILDERS: LocationBuilders = {
         let mut m: HashMap<String, Arc<DynLocationBuilder>> = HashMap::new();
@@ -209,6 +231,11 @@ lazy_static! {
         m.insert("http_proxy".to_string(), Arc::new(HttpProxyBuilder));
         m.insert("websocket_proxy".to_string(), Arc::new(WebsocketProxyBuilder));
         LocationBuilders { map: RwLock::new(m) }
+    };
+    static ref CONF_BUILDERS: ConfBuilders = {
+        ConfBuilders {
+            map: RwLock::new(HashMap::new()),
+        }
     };
 }
 
@@ -245,11 +272,42 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
             Some(v) => to_env_string_list(v).ok_or(cerr(field, "Expected String Vector")),
         }?;
 
-        let mut domain = Domain {
-            root: opt_field("root")?,
-            cert_path: opt_field("cert_path")?,
-            ..Default::default()
-        };
+        let mut domain = Domain::builder();
+
+        domain.root(opt_field("root")?).cert_path(opt_field("cert_path")?);
+
+        let field = &"name";
+        if let Some(name) = map.get(&Yaml::String(field.to_string())).and_then(|v| v.as_str()) {
+            domain.name(name.to_string());
+        } else {
+            let mut name = path
+                .file_name()
+                .expect("conf to be a filename")
+                .to_string_lossy()
+                .to_string();
+            name.truncate(name.len() - 4);
+            domain.name(name);
+        }
+
+        let field = &"aliases";
+        if let Some(aliases) = map
+            .get(&Yaml::String(field.to_string()))
+            .and_then(|v| v.as_vec().and_then(|v| to_env_string_list(v)))
+        {
+            domain.aliases(aliases);
+        }
+
+        let domain = domain.build();
+        {
+            let conf_builders = CONF_BUILDERS.map.read().expect("Should get read lock");
+            for (field, builder) in conf_builders.iter() {
+                if let Some(yaml) = get_opt_field(field) {
+                    if let Err(err) = builder.load_yaml(&domain, yaml) {
+                        return Err(ConfError::new(path, field, &err));
+                    }
+                }
+            }
+        }
 
         let field = &"services";
         if let Some(paths) = get_opt_field(field).and_then(|v| v.as_hash()) {
@@ -258,9 +316,7 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
                 if v.as_hash().is_none() {
                     return Err(cerr(field, &format!("Invalid services value {:?}", v)));
                 }
-                domain
-                    .services
-                    .insert(k.to_string(), Arc::new(load_services(path, k, v)?));
+                domain.add_service(k.to_string(), Arc::new(load_services(path, k, v)?));
             }
         }
 
@@ -277,32 +333,12 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
                 let loc = load_location(&domain, path, k, v)?;
                 for k in expand_path(k) {
                     if let Some(ks) = k.strip_suffix('*') {
-                        domain.location_prefixes.insert(ks.to_string(), loc.clone());
+                        domain.add_prefix_location(ks.to_string(), loc.clone());
                     } else {
-                        domain.locations.insert(k.to_string(), loc.clone());
+                        domain.add_location(k.to_string(), loc.clone());
                     }
                 }
             }
-        }
-        let field = &"name";
-        if let Some(name) = map.get(&Yaml::String(field.to_string())).and_then(|v| v.as_str()) {
-            domain.name = name.to_string();
-        } else {
-            let mut name = path
-                .file_name()
-                .expect("conf to be a filename")
-                .to_string_lossy()
-                .to_string();
-            name.truncate(name.len() - 4);
-            domain.name = name;
-        }
-
-        let field = &"aliases";
-        if let Some(aliases) = map
-            .get(&Yaml::String(field.to_string()))
-            .and_then(|v| v.as_vec().and_then(|v| to_env_string_list(v)))
-        {
-            domain.aliases = aliases;
         }
 
         Ok((listeners, domain))
@@ -480,24 +516,16 @@ pub fn load_from(cdir: &Path, _modified_since: SystemTime) -> Result<(ListernerM
     }) {
         let (listeners, mut domain) = load_domain(&entry.path())?;
 
-        for (name, service) in domain.services.iter() {
-            if let Some(cmd) = service.cmd_name() {
-                if service_map.insert(cmd.to_string(), service.clone()).is_some() {
-                    return Err(ConfError::new(
-                        &entry.path(),
-                        name,
-                        &format!("Duplicate service app {}", cmd),
-                    ));
-                }
-            }
-        }
+        domain
+            .fill_service_map(&mut service_map)
+            .map_err(|s| ConfError::new(&entry.path(), &s.0, &s.1))?;
 
-        if !domain.cert_path.is_empty() {
-            if let Some(config) = tls_config_map.get(&domain.cert_path) {
-                domain.tls_config = Some(config.clone());
+        if !domain.cert_path().is_empty() {
+            if let Some(config) = tls_config_map.get(domain.cert_path()) {
+                domain.set_tls_config(Some(config.clone()));
             } else {
                 tls_config_map.insert(
-                    domain.cert_path.clone(),
+                    domain.cert_path().to_owned(),
                     set_cert(&mut domain).map_err(|msg| ConfError::new(&entry.path(), "cert_path", &msg))?,
                 );
             }
@@ -506,21 +534,22 @@ pub fn load_from(cdir: &Path, _modified_since: SystemTime) -> Result<(ListernerM
         for l in listeners {
             if let Some(dm) = listener_map.get(&l) {
                 if let Some(v) = dm.values().next() {
-                    if v.cert_path.is_empty() != domain.cert_path.is_empty() {
+                    if v.cert_path().is_empty() != domain.cert_path().is_empty() {
                         return Err(ConfError::new(
                             cdir,
                             "cert_path",
                             &format!(
                                 "Mixed TLS and Plain domains on listener: {} and {}\n",
-                                v.name, domain.name
+                                v.name(),
+                                domain.name()
                             ),
                         ));
                     }
                 }
             }
             let entry = listener_map.entry(l).or_insert(HashMap::new());
-            entry.insert(domain.name.to_string(), domain.clone());
-            for name in &domain.aliases {
+            entry.insert(domain.name().to_owned(), domain.clone());
+            for name in domain.aliases() {
                 entry.insert(name.to_string(), domain.clone());
             }
         }
@@ -529,7 +558,7 @@ pub fn load_from(cdir: &Path, _modified_since: SystemTime) -> Result<(ListernerM
 }
 
 fn set_cert(domain: &mut Domain) -> Result<Arc<rustls::ServerConfig>, String> {
-    let mut cert = PathBuf::from(&domain.cert_path);
+    let mut cert = PathBuf::from(domain.cert_path());
     let mut priv_key = cert.clone();
     cert.push("fullchain.pem");
     priv_key.push("privkey.pem");
@@ -547,7 +576,7 @@ fn set_cert(domain: &mut Domain) -> Result<Arc<rustls::ServerConfig>, String> {
             config.alpn_protocols.push(b"http/1.1".to_vec());
 
             let config = Arc::new(config);
-            domain.tls_config = Some(config.clone());
+            domain.set_tls_config(Some(config.clone()));
 
             Ok(config)
         }
@@ -639,7 +668,7 @@ async fn load_and_start(
 
             set.spawn(async move {
                 if let Some(d) = domains.values().next() {
-                    let is_tls = !d.cert_path.is_empty();
+                    let is_tls = !d.cert_path().is_empty();
                     let res = listener::listen(addr, domains, rx, is_tls).await;
                     if let Err(err) = res {
                         eprintln!("Listen err {:?}", err);
@@ -673,32 +702,26 @@ mod tests {
         let (n, d) = ds.iter().next().unwrap();
         assert_eq!(n, "*");
 
-        let rw = d
-            .location_prefixes
-            .get_ancestor_value("/abc/123")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<Redirect>()
-            .unwrap();
+        let rd = d.find_location("/abc/123").unwrap();
+        let rd = rd.as_any().downcast_ref::<Redirect>().unwrap();
 
-        assert_eq!(rw.code, 301);
-        assert_eq!(rw.scheme, Some("https".to_string()));
-        assert_eq!(rw.path, None);
+        assert_eq!(rd.code, 301);
+        assert_eq!(rd.scheme, Some("https".to_string()));
+        assert_eq!(rd.path, None);
 
         let ds = cb.get("localhost:8080").unwrap();
 
         let (n, d) = ds.iter().next().unwrap();
         assert_eq!(n, "localhost");
-        let (n, service) = d.services.iter().next().unwrap();
-        assert_eq!(n, "app");
+        let service = d.get_service("app").unwrap();
         assert_eq!(
             service.cmd,
             Some((s("my-test-cmd"), s("../cmd-name"), vec![s("arg1"), s("arg2")]))
         );
         assert_eq!(service.server_socket, "localhost:3000");
 
-        let v1 = d.location_prefixes.get_ancestor_value("/ws/123").unwrap();
-        let v2 = d.locations.get("/rc").unwrap();
+        let v1 = d.find_location("/ws/123").unwrap();
+        let v2 = d.find_location("/rc").unwrap();
 
         assert_eq!(format!("{v1:?}"), format!("{v2:?}"));
 

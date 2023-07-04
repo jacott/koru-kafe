@@ -6,34 +6,147 @@ use hyper::{
     Body, Client, Request, Response, StatusCode, Uri,
 };
 use radix_trie::Trie;
-use std::{any::Any, collections::HashMap, error::Error, fmt::Display, io, net::IpAddr, str::FromStr, sync::Arc};
+use std::{
+    any::Any,
+    collections::HashMap,
+    error::Error,
+    fmt::Display,
+    io,
+    net::IpAddr,
+    str::FromStr,
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
+};
 use tokio_rustls::rustls;
 
 use crate::{koru_service, static_files};
 
 pub type DynLocation = dyn Location + Send + Sync;
 pub type RcDynLocation = Arc<DynLocation>;
+pub type DynConf = dyn Conf + Send + Sync;
+pub type RcDynConf = Arc<DynConf>;
 pub type DomainMap = HashMap<String, Arc<Domain>>;
 pub type ServiceMap = HashMap<String, Arc<koru_service::Service>>;
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Domain {
-    pub root: String,
-    pub name: String,
-    pub aliases: Vec<String>,
-    pub cert_path: String,
-    pub tls_config: Option<Arc<rustls::ServerConfig>>,
-    pub services: ServiceMap,
-    pub locations: HashMap<String, RcDynLocation>,
-    pub location_prefixes: Trie<String, RcDynLocation>,
+    shared: Arc<Shared>,
+}
+
+#[derive(Debug, Default)]
+pub struct Shared {
+    root: String,
+    name: String,
+    aliases: Vec<String>,
+    cert_path: String,
+    state: RwLock<State>,
+}
+
+#[derive(Debug, Default)]
+struct State {
+    tls_config: Option<Arc<rustls::ServerConfig>>,
+    services: ServiceMap,
+    locations: HashMap<String, RcDynLocation>,
+    location_prefixes: Trie<String, RcDynLocation>,
+    confs: HashMap<String, RcDynConf>,
+}
+
+#[derive(Debug, Default)]
+pub struct DomainBuilder {
+    shared: Shared,
+}
+
+impl DomainBuilder {
+    pub fn root(&mut self, value: String) -> &mut DomainBuilder {
+        self.shared.root = value;
+        self
+    }
+
+    pub fn name(&mut self, value: String) -> &mut DomainBuilder {
+        self.shared.name = value;
+        self
+    }
+
+    pub fn cert_path(&mut self, value: String) -> &mut DomainBuilder {
+        self.shared.cert_path = value;
+        self
+    }
+
+    pub fn aliases(&mut self, value: Vec<String>) -> &mut DomainBuilder {
+        self.shared.aliases = value;
+        self
+    }
+
+    pub fn build(&mut self) -> Domain {
+        let mut shared = Default::default();
+        std::mem::swap(&mut self.shared, &mut shared);
+        Domain {
+            shared: Arc::new(shared),
+        }
+    }
 }
 
 impl Domain {
+    pub fn builder() -> DomainBuilder {
+        DomainBuilder::default()
+    }
+    pub fn root(&self) -> &str {
+        &self.shared.root
+    }
+
+    pub fn name(&self) -> &str {
+        &self.shared.name
+    }
+
+    pub fn cert_path(&self) -> &str {
+        &self.shared.cert_path
+    }
+
+    pub fn aliases(&self) -> &Vec<String> {
+        &self.shared.aliases
+    }
+
+    pub fn set_tls_config(&self, value: Option<Arc<rustls::ServerConfig>>) {
+        self.write_state().tls_config = value;
+    }
+
+    pub fn tls_config(&self) -> Option<Arc<rustls::ServerConfig>> {
+        self.read_state().tls_config.clone()
+    }
+
+    pub fn add_location(&self, key: String, value: RcDynLocation) -> Option<RcDynLocation> {
+        let locations = &mut self.write_state().locations;
+        locations.insert(key, value)
+    }
+
+    pub fn add_prefix_location(&self, key: String, value: RcDynLocation) -> Option<RcDynLocation> {
+        let locations = &mut self.write_state().location_prefixes;
+        locations.insert(key, value)
+    }
+
     pub fn find_location(&self, path: &str) -> Option<RcDynLocation> {
-        self.locations
-            .get(path)
-            .or_else(|| self.location_prefixes.get_ancestor_value(path))
-            .cloned()
+        if let Some(v) = self.read_state().locations.get(path) {
+            Some(v.clone())
+        } else {
+            self.read_state().location_prefixes.get_ancestor_value(path).cloned()
+        }
+    }
+
+    pub fn add_service(&self, key: String, value: Arc<koru_service::Service>) -> Option<Arc<koru_service::Service>> {
+        let services = &mut self.write_state().services;
+        services.insert(key, value)
+    }
+
+    pub fn get_service(&self, name: &str) -> Option<Arc<koru_service::Service>> {
+        self.read_state().services.get(name).cloned()
+    }
+
+    pub fn add_conf(&self, key: String, value: RcDynConf) -> Option<RcDynConf> {
+        let confs = &mut self.write_state().confs;
+        confs.insert(key, value)
+    }
+
+    pub fn get_conf(&self, path: &str) -> Option<RcDynConf> {
+        self.read_state().confs.get(path).cloned()
     }
 
     pub fn handle_error(&self, err: crate::Error, path: &str) -> crate::Result<Response<Body>> {
@@ -60,16 +173,39 @@ impl Domain {
     }
 
     pub fn client_error(&self, code: u16, message: String, path: &str) -> crate::Result<Response<Body>> {
-        let msg = format!("{} {}{} Client error {}\n", code, self.name, path, message);
+        let msg = format!("{} {}{} Client error {}\n", code, self.shared.name, path, message);
         eprintln!("{}", &msg);
         Ok(Response::builder().status(code).body(msg.into())?)
     }
 
     pub fn server_error(&self, code: u16, message: String, path: &str) -> crate::Result<Response<Body>> {
-        let msg = format!("{} {}{} Server error\n{}\n", code, self.name, path, message);
+        let msg = format!("{} {}{} Server error\n{}\n", code, self.shared.name, path, message);
         eprintln!("{}", msg);
 
         Ok(Response::builder().status(code).body(msg.into())?)
+    }
+
+    fn write_state(&self) -> RwLockWriteGuard<State> {
+        self.shared.state.write().expect("should lock state")
+    }
+
+    fn read_state(&self) -> RwLockReadGuard<State> {
+        self.shared.state.read().expect("should lock state")
+    }
+
+    pub(crate) fn fill_service_map(
+        &self,
+        service_map: &mut HashMap<String, Arc<koru_service::Service>>,
+    ) -> Result<(), (String, String)> {
+        for (name, service) in self.read_state().services.iter() {
+            if let Some(cmd) = service.cmd_name() {
+                if service_map.insert(cmd.to_string(), service.clone()).is_some() {
+                    return Err((name.to_string(), format!("Duplicate service app {}", cmd)));
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -82,6 +218,12 @@ impl Display for NoConnect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "NoConnect")
     }
+}
+
+pub trait Conf {
+    fn as_any(&self) -> &dyn Any;
+
+    fn name(&self) -> &str;
 }
 
 #[async_trait]
@@ -109,6 +251,12 @@ pub trait Location {
 impl core::fmt::Debug for dyn Location + Send + Sync {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.info())
+    }
+}
+
+impl core::fmt::Debug for dyn Conf + Send + Sync {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
     }
 }
 
@@ -257,116 +405,5 @@ impl Location for WebsocketProxy {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::net::Ipv4Addr;
-
-    use hyper::body::to_bytes;
-
-    use super::*;
-
-    struct Foo;
-
-    #[async_trait]
-    impl Location for Foo {
-        async fn connect(&self, _req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
-            let ans = tokio::join!(tokio::task::spawn(async move {
-                println!("{:?}", _req);
-                _req
-            }));
-            Ok(Response::builder()
-                .body((format!("hello {:?}", ans.0.unwrap().method())).into())
-                .unwrap())
-        }
-
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-    }
-    #[tokio::test]
-    async fn connect() {
-        let mut d: Domain = Default::default();
-        d.location_prefixes.insert("/".to_string(), Arc::new(Foo {}));
-
-        let req = Default::default();
-        let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-
-        let resp = d
-            .location_prefixes
-            .get("/")
-            .unwrap()
-            .connect(req, ip_addr)
-            .await
-            .unwrap();
-
-        assert_eq!(to_bytes(resp.into_body()).await.unwrap(), "hello GET");
-    }
-
-    #[tokio::test]
-    async fn rewrite() {
-        let mut d: Domain = Default::default();
-        d.locations.insert("/index.html".to_string(), Arc::new(Foo {}));
-        d.location_prefixes.insert(
-            "/".to_string(),
-            Arc::new(Rewrite {
-                path: "/index.html".to_string(),
-            }),
-        );
-
-        let mut req = Request::builder()
-            .uri("http://localhost/?abc=123")
-            .body(Body::empty())
-            .unwrap();
-        let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-
-        let loc = d
-            .location_prefixes
-            .get("/")
-            .unwrap()
-            .convert(&d, &mut req, &ip_addr)
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(req.uri().to_string(), "http://localhost/index.html?abc=123");
-        let resp = loc.connect(req, ip_addr).await.unwrap();
-
-        assert_eq!(to_bytes(resp.into_body()).await.unwrap(), "hello GET");
-    }
-
-    #[tokio::test]
-    async fn redirect() -> crate::Result<()> {
-        let mut d: Domain = Default::default();
-
-        d.location_prefixes.insert(
-            "/".to_string(),
-            Arc::new(Redirect {
-                code: StatusCode::MOVED_PERMANENTLY,
-                scheme: Some("https".to_string()),
-                ..Default::default()
-            }),
-        );
-
-        let req = Request::builder()
-            .uri("http://localhost/a/b/c?abc=123")
-            .body(Body::empty())
-            .unwrap();
-        let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-
-        let resp = d
-            .location_prefixes
-            .get("/")
-            .unwrap()
-            .connect(req, ip_addr)
-            .await
-            .unwrap();
-
-        assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
-        assert_eq!(
-            String::from_utf8(resp.headers().get(header::LOCATION).unwrap().as_bytes().to_vec())?.as_str(),
-            "https://localhost/a/b/c?abc=123"
-        );
-
-        assert_eq!(to_bytes(resp.into_body()).await.unwrap(), "");
-
-        Ok(())
-    }
-}
+#[path = "domain_test.rs"]
+mod test;
