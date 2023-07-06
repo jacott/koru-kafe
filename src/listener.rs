@@ -29,7 +29,7 @@ async fn handler(
                         Some(loc) => loc,
                     };
 
-                    match loc.connect(req, ip_addr).await {
+                    match loc.connect(&domain, req, ip_addr).await {
                         Ok(resp) => Ok(resp),
                         Err(err) => domain.handle_error(err, ""),
                     }

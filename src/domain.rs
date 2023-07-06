@@ -237,7 +237,7 @@ pub trait Location {
         Ok(None)
     }
 
-    async fn connect(&self, _req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
+    async fn connect(&self, _domain: &Domain, _req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
         Err(Box::new(NoConnect))
     }
 
@@ -304,7 +304,7 @@ pub struct Redirect {
 
 #[async_trait]
 impl Location for Redirect {
-    async fn connect(&self, req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
+    async fn connect(&self, _domain: &Domain, req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
         let mut parts = req.uri().clone().into_parts();
 
         if let Some(v) = &self.scheme {
@@ -352,7 +352,7 @@ pub struct File {
 
 #[async_trait]
 impl Location for File {
-    async fn connect(&self, req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
+    async fn connect(&self, _domain: &Domain, req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
         static_files::send_file(req, &self.opts).await
     }
 
@@ -369,7 +369,7 @@ pub struct HttpProxy {
 
 #[async_trait]
 impl Location for HttpProxy {
-    async fn connect(&self, req: Request<Body>, ip_addr: IpAddr) -> crate::Result<Response<Body>> {
+    async fn connect(&self, _domain: &Domain, req: Request<Body>, ip_addr: IpAddr) -> crate::Result<Response<Body>> {
         koru_service::pass(req, ip_addr, self.client.clone(), &self.server_socket).await
     }
 
@@ -385,7 +385,12 @@ pub struct WebsocketProxy {
 
 #[async_trait]
 impl Location for WebsocketProxy {
-    async fn connect(&self, mut req: Request<Body>, ip_addr: IpAddr) -> crate::Result<Response<Body>> {
+    async fn connect(
+        &self,
+        _domain: &Domain,
+        mut req: Request<Body>,
+        ip_addr: IpAddr,
+    ) -> crate::Result<Response<Body>> {
         let (response, ws) = hyper_tungstenite::upgrade(&mut req, None)?;
 
         let server_socket = self.server_socket.clone();

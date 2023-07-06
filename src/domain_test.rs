@@ -6,7 +6,7 @@ struct Foo;
 
 #[async_trait]
 impl Location for Foo {
-    async fn connect(&self, _req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
+    async fn connect(&self, _domain: &Domain, _req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
         let ans = tokio::join!(tokio::task::spawn(async move {
             println!("{:?}", _req);
             _req
@@ -30,7 +30,7 @@ async fn connect() {
     let req = Default::default();
     let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
-    let resp = d.find_location("/").unwrap().connect(req, ip_addr).await.unwrap();
+    let resp = d.find_location("/").unwrap().connect(&d, req, ip_addr).await.unwrap();
 
     assert_eq!(to_bytes(resp.into_body()).await.unwrap(), "hello GET");
 }
@@ -62,7 +62,7 @@ async fn rewrite() {
         .unwrap();
 
     assert_eq!(req.uri().to_string(), "http://localhost/index.html?abc=123");
-    let resp = loc.connect(req, ip_addr).await.unwrap();
+    let resp = loc.connect(&d, req, ip_addr).await.unwrap();
 
     assert_eq!(to_bytes(resp.into_body()).await.unwrap(), "hello GET");
 }
@@ -86,7 +86,7 @@ async fn redirect() -> crate::Result<()> {
         .unwrap();
     let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
-    let resp = d.find_location("/").unwrap().connect(req, ip_addr).await.unwrap();
+    let resp = d.find_location("/").unwrap().connect(&d, req, ip_addr).await.unwrap();
 
     assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
     assert_eq!(
