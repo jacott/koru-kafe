@@ -11,30 +11,16 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, RwLock};
 use tokio_rustls::{rustls, LazyConfigAcceptor};
 
-async fn handler(
-    mut req: Request<Body>,
-    ip_addr: IpAddr,
-    domain: Option<Arc<Domain>>,
-) -> crate::Result<Response<Body>> {
+async fn handler(req: Request<Body>, ip_addr: IpAddr, domain: Option<Domain>) -> crate::Result<Response<Body>> {
     if let Some(domain) = domain {
         match domain.find_location(req.uri().path()) {
             None => domain.handle_error(
                 Box::new(io::Error::new(io::ErrorKind::NotFound, "Not Found")),
                 req.uri().path(),
             ),
-            Some(loc) => match loc.convert(&domain, &mut req, &ip_addr) {
-                Ok(nl) => {
-                    let loc = match nl {
-                        None => loc.to_owned(),
-                        Some(loc) => loc,
-                    };
-
-                    match loc.connect(&domain, req, ip_addr).await {
-                        Ok(resp) => Ok(resp),
-                        Err(err) => domain.handle_error(err, ""),
-                    }
-                }
-                Err(err) => domain.handle_error(err, req.uri().path()),
+            Some(loc) => match loc.connect(domain.clone(), req, ip_addr, 0).await {
+                Ok(resp) => Ok(resp),
+                Err(err) => domain.handle_error(err, ""),
             },
         }
     } else {
@@ -43,7 +29,7 @@ async fn handler(
     }
 }
 
-fn with_domain(host: Option<&str>, domains: &DomainMap) -> Option<Arc<Domain>> {
+fn with_domain(host: Option<&str>, domains: &DomainMap) -> Option<Domain> {
     if let Some(host) = host {
         Some(domains.get(host).or_else(|| domains.get("*"))?.clone())
     } else {
@@ -173,16 +159,13 @@ mod tests {
         assert!(super::with_domain(Some("foo"), &dm).is_none());
         assert!(super::with_domain(None, &dm).is_none());
 
-        let any = Arc::new(Domain::builder().name("*".to_string()).build());
+        let any = Domain::builder().name("*".to_string()).build();
         dm.insert("*".to_string(), any.clone());
         let ans = super::with_domain(Some("foo"), &dm);
         assert!(ans.is_some());
         assert_eq!(ans.unwrap().name(), "*");
 
-        dm.insert(
-            "foo".to_string(),
-            Arc::new(Domain::builder().name("foo".to_string()).build()),
-        );
+        dm.insert("foo".to_string(), Domain::builder().name("foo".to_string()).build());
         let ans = super::with_domain(Some("foo"), &dm);
         assert!(ans.is_some());
         assert_eq!(ans.unwrap().name(), "foo");

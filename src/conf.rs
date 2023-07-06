@@ -25,7 +25,7 @@ use tokio::{
 use tokio_rustls::rustls;
 pub use yaml_rust::{yaml, Yaml, YamlLoader};
 
-pub type ListernerMap = HashMap<String, domain::DomainMap>;
+pub type ListernerMap = HashMap<String, DomainMap>;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Conf;
@@ -530,7 +530,6 @@ pub fn load_from(cdir: &Path, _modified_since: SystemTime) -> Result<(ListernerM
                 );
             }
         }
-        let domain = Arc::new(domain);
         for l in listeners {
             if let Some(dm) = listener_map.get(&l) {
                 if let Some(v) = dm.values().next() {
@@ -621,7 +620,7 @@ fn yaml_get_opt_string(h: &yaml::Hash, field: &str) -> Result<Option<String>, St
     }
 }
 
-type ReloadMap = HashMap<String, mpsc::Sender<HashMap<String, Arc<Domain>>>>;
+type ReloadMap = HashMap<String, mpsc::Sender<HashMap<String, Domain>>>;
 
 async fn load_and_start(
     set: &mut JoinSet<()>,
@@ -629,16 +628,16 @@ async fn load_and_start(
     cdir: &Path,
     last_scanned: SystemTime,
 ) -> Result<(), ConfError> {
-    let (domain_map, mut services_map) = load_from(cdir, last_scanned)?;
+    let (domain_map, mut service_map) = load_from(cdir, last_scanned)?;
 
-    if !services_map.is_empty() {
+    if !service_map.is_empty() {
         if last_scanned != UNIX_EPOCH {
             eprintln!(
                 "Managed services is not currently supported for reload!\n{:?}\n",
-                services_map.keys().collect::<Vec<&String>>()
+                service_map.keys().collect::<Vec<&String>>()
             );
         } else {
-            for (_, service) in services_map.drain() {
+            for (_, service) in service_map.drain() {
                 set.spawn(async move {
                     if let Err(err) = service.start().await {
                         eprintln!(

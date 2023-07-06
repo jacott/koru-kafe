@@ -24,7 +24,7 @@ pub type DynLocation = dyn Location + Send + Sync;
 pub type RcDynLocation = Arc<DynLocation>;
 pub type DynConf = dyn Conf + Send + Sync;
 pub type RcDynConf = Arc<DynConf>;
-pub type DomainMap = HashMap<String, Arc<Domain>>;
+pub type DomainMap = HashMap<String, Domain>;
 pub type ServiceMap = HashMap<String, Arc<koru_service::Service>>;
 
 #[derive(Default, Debug, Clone)]
@@ -33,7 +33,7 @@ pub struct Domain {
 }
 
 #[derive(Debug, Default)]
-pub struct Shared {
+struct Shared {
     root: String,
     name: String,
     aliases: Vec<String>,
@@ -228,18 +228,13 @@ pub trait Conf {
 
 #[async_trait]
 pub trait Location {
-    fn convert(
+    async fn connect(
         &self,
-        _domain: &Domain,
-        _req: &mut Request<Body>,
-        _ip_addr: &IpAddr,
-    ) -> crate::Result<Option<RcDynLocation>> {
-        Ok(None)
-    }
-
-    async fn connect(&self, _domain: &Domain, _req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
-        Err(Box::new(NoConnect))
-    }
+        _domain: Domain,
+        _req: Request<Body>,
+        _ip_addr: IpAddr,
+        count: u16,
+    ) -> crate::Result<Response<Body>>;
 
     fn info(&self) -> String {
         "Location".to_string()
@@ -267,12 +262,16 @@ pub struct Rewrite {
 
 #[async_trait]
 impl Location for Rewrite {
-    fn convert(
+    async fn connect(
         &self,
-        domain: &Domain,
-        req: &mut Request<Body>,
-        _ip_addr: &IpAddr,
-    ) -> crate::Result<Option<RcDynLocation>> {
+        domain: Domain,
+        mut req: Request<Body>,
+        ip_addr: IpAddr,
+        count: u16,
+    ) -> crate::Result<Response<Body>> {
+        if count > 2 {
+            return Err("nested connect count exceeded for Rewrite".into());
+        }
         let mut parts = req.uri().clone().into_parts();
 
         if let Some(query) = req.uri().query() {
@@ -284,7 +283,7 @@ impl Location for Rewrite {
 
         match domain.find_location(&self.path) {
             None => Err(format!("Can't find {}", self.path).into()),
-            Some(l) => Ok(Some(l.clone())),
+            Some(l) => l.connect(domain, req, ip_addr, count + 1).await,
         }
     }
 
@@ -304,7 +303,13 @@ pub struct Redirect {
 
 #[async_trait]
 impl Location for Redirect {
-    async fn connect(&self, _domain: &Domain, req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
+    async fn connect(
+        &self,
+        _domain: Domain,
+        req: Request<Body>,
+        _ip_addr: IpAddr,
+        _count: u16,
+    ) -> crate::Result<Response<Body>> {
         let mut parts = req.uri().clone().into_parts();
 
         if let Some(v) = &self.scheme {
@@ -352,7 +357,13 @@ pub struct File {
 
 #[async_trait]
 impl Location for File {
-    async fn connect(&self, _domain: &Domain, req: Request<Body>, _ip_addr: IpAddr) -> crate::Result<Response<Body>> {
+    async fn connect(
+        &self,
+        _domain: Domain,
+        req: Request<Body>,
+        _ip_addr: IpAddr,
+        _count: u16,
+    ) -> crate::Result<Response<Body>> {
         static_files::send_file(req, &self.opts).await
     }
 
@@ -369,7 +380,13 @@ pub struct HttpProxy {
 
 #[async_trait]
 impl Location for HttpProxy {
-    async fn connect(&self, _domain: &Domain, req: Request<Body>, ip_addr: IpAddr) -> crate::Result<Response<Body>> {
+    async fn connect(
+        &self,
+        _domain: Domain,
+        req: Request<Body>,
+        ip_addr: IpAddr,
+        _count: u16,
+    ) -> crate::Result<Response<Body>> {
         koru_service::pass(req, ip_addr, self.client.clone(), &self.server_socket).await
     }
 
@@ -387,9 +404,10 @@ pub struct WebsocketProxy {
 impl Location for WebsocketProxy {
     async fn connect(
         &self,
-        _domain: &Domain,
+        _domain: Domain,
         mut req: Request<Body>,
         ip_addr: IpAddr,
+        _count: u16,
     ) -> crate::Result<Response<Body>> {
         let (response, ws) = hyper_tungstenite::upgrade(&mut req, None)?;
 
