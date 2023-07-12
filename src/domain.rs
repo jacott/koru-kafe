@@ -47,7 +47,7 @@ struct State {
     services: ServiceMap,
     locations: HashMap<String, RcDynLocation>,
     location_prefixes: Trie<String, RcDynLocation>,
-    confs: HashMap<String, RcDynConf>,
+    confs: HashMap<&'static str, RcDynConf>,
 }
 
 #[derive(Debug, Default)]
@@ -140,7 +140,7 @@ impl Domain {
         self.read_state().services.get(name).cloned()
     }
 
-    pub fn add_conf(&self, key: String, value: RcDynConf) -> Option<RcDynConf> {
+    pub fn add_conf(&self, key: &'static str, value: RcDynConf) -> Option<RcDynConf> {
         let confs = &mut self.write_state().confs;
         confs.insert(key, value)
     }
