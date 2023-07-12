@@ -10,7 +10,7 @@ use std::{
     any::Any,
     collections::HashMap,
     error::Error,
-    fmt::Display,
+    fmt::{Debug, Display},
     io,
     net::IpAddr,
     str::FromStr,
@@ -32,7 +32,7 @@ pub struct Domain {
     shared: Arc<Shared>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct Shared {
     root: String,
     name: String,
@@ -53,6 +53,12 @@ struct State {
 #[derive(Debug, Default)]
 pub struct DomainBuilder {
     shared: Shared,
+}
+
+impl Debug for Shared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Shared").field("name", &self.name).finish()
+    }
 }
 
 impl DomainBuilder {
@@ -89,6 +95,7 @@ impl Domain {
     pub fn builder() -> DomainBuilder {
         DomainBuilder::default()
     }
+
     pub fn root(&self) -> &str {
         &self.shared.root
     }

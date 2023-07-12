@@ -694,7 +694,7 @@ mod tests {
 
     #[test]
     fn load_from() -> crate::Result<()> {
-        let (cb, _) = super::load_from(Path::new("tests/config"), UNIX_EPOCH)?;
+        let cb = super::load_from(Path::new("tests/config"), UNIX_EPOCH)?.0;
         assert_eq!(cb.len(), 2);
 
         let ds = cb.get("[::]:8088").unwrap();
