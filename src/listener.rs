@@ -2,13 +2,13 @@ use crate::domain::{Domain, DomainMap};
 use hyper::server::conn::Http;
 use hyper::service::service_fn;
 use hyper::{Body, Request, Response};
-use std::io;
 use std::net::IpAddr;
 use std::ops::DerefMut;
 use std::sync::Arc;
+use std::{io, sync::Mutex};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tokio_rustls::{rustls, LazyConfigAcceptor};
 
 async fn handler(req: Request<Body>, ip_addr: IpAddr, domain: Option<Domain>) -> crate::Result<Response<Body>> {
@@ -37,6 +37,8 @@ fn with_domain(host: Option<&str>, domains: &DomainMap) -> Option<Domain> {
     }
 }
 
+const SHOULD_LOCK: &str = "should lock";
+
 pub async fn listen(
     addr: String,
     domains: DomainMap,
@@ -47,18 +49,18 @@ pub async fn listen(
         .await
         .map_err(|e| io::Error::new(e.kind(), format!("listen on {} failed - {}", addr, e)))?;
 
-    let domains = Arc::new(RwLock::new(domains));
+    let domains = Arc::new(Mutex::new(domains));
     let d2 = domains.clone();
 
     tokio::spawn(async move {
         while let Some(new_domains) = reload.recv().await {
-            *d2.write().await = new_domains;
+            *d2.lock().expect(SHOULD_LOCK) = new_domains;
         }
     });
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;
-        let domains = domains.read().await.clone();
+        let domains = domains.lock().expect(SHOULD_LOCK).clone();
         let ip_addr = peer_addr.ip();
         if is_tls {
             tokio::spawn(async move {
