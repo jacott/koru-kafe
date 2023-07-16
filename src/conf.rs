@@ -393,7 +393,7 @@ fn to_env_string_list(v: &[Yaml]) -> Option<Vec<String>> {
     ans.ok()
 }
 
-fn to_env_string(v: &str) -> String {
+pub fn to_env_string(v: &str) -> String {
     let v = v.to_string();
     let mut prev = 0;
     let mut result = String::new();
