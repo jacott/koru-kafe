@@ -11,7 +11,7 @@ use std::{
 };
 use tokio::{net::TcpStream, process::Command, sync::Mutex};
 
-use crate::Result;
+use crate::{info, Result};
 
 #[derive(Default, Debug)]
 pub struct Service {
@@ -33,7 +33,7 @@ impl Service {
             loop {
                 let now = SystemTime::now();
                 let mut child = Command::new(cmd).arg0(arg0).args(args).spawn()?;
-                eprintln!("Running ({}) {}: {} {:?}", child.id().unwrap_or(0), arg0, cmd, args);
+                info!("Running ({}) {}: {} {:?}", child.id().unwrap_or(0), arg0, cmd, args);
                 child.wait().await?;
                 if now.elapsed().unwrap_or(ZERO_DUR).as_secs() > 300 {
                     wait_time = 0;
@@ -83,12 +83,12 @@ pub async fn websocket(fut: HyperWebsocket, req: Request<Body>, from_addr: &IpAd
             match msg {
                 Ok(msg) => {
                     if let Err(err) = wss_s.send(msg).await {
-                        eprintln!("close socket - {:?}", err);
+                        info!("close socket - {:?}", err);
                         break;
                     }
                 }
                 Err(err) => {
-                    eprintln!("close socket - {:?}", err);
+                    info!("close socket - {:?}", err);
                     break;
                 }
             }
@@ -100,12 +100,12 @@ pub async fn websocket(fut: HyperWebsocket, req: Request<Body>, from_addr: &IpAd
             match msg {
                 Ok(msg) => {
                     if let Err(err) = wsc_s.send(msg).await {
-                        eprintln!("close socket - {:?}", err);
+                        info!("close socket - {:?}", err);
                         break;
                     }
                 }
                 Err(err) => {
-                    eprintln!("close socket - {:?}", err);
+                    info!("close socket - {:?}", err);
                     break;
                 }
             }

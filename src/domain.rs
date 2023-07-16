@@ -18,7 +18,7 @@ use std::{
 };
 use tokio_rustls::rustls;
 
-use crate::{koru_service, static_files};
+use crate::{error, koru_service, static_files};
 
 pub type DynLocation = dyn Location + Send + Sync;
 pub type RcDynLocation = Arc<DynLocation>;
@@ -181,13 +181,13 @@ impl Domain {
 
     pub fn client_error(&self, code: u16, message: String, path: &str) -> crate::Result<Response<Body>> {
         let msg = format!("{} {}{} Client error {}\n", code, self.shared.name, path, message);
-        eprintln!("{}", &msg);
+        error!("{}", &msg);
         Ok(Response::builder().status(code).body(msg.into())?)
     }
 
     pub fn server_error(&self, code: u16, message: String, path: &str) -> crate::Result<Response<Body>> {
         let msg = format!("{} {}{} Server error\n{}\n", code, self.shared.name, path, message);
-        eprintln!("{}", msg);
+        error!("{}", msg);
 
         Ok(Response::builder().status(code).body(msg.into())?)
     }
@@ -422,7 +422,7 @@ impl Location for WebsocketProxy {
 
         tokio::task::spawn(async move {
             if let Err(e) = koru_service::websocket(ws, req, &ip_addr, &server_socket).await {
-                eprintln!("Error in websocket connection: {}", e);
+                error!("Error in websocket connection: {}", e);
             }
         });
 

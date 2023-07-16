@@ -1,6 +1,6 @@
 use crate::{
     domain::{self, Domain, DomainMap, DynLocation, Redirect},
-    koru_service, listener,
+    error, info, koru_service, listener,
     location_path::expand_path,
     static_files,
 };
@@ -476,7 +476,7 @@ pub async fn load_and_monitor(cdir: &Path, mut reload: mpsc::Receiver<()>) -> Re
                             let prev_mod_time = last_scanned;
                             last_scanned = crate::round_time_secs(SystemTime::now());
                             if let Err(err) = load_and_start(&mut set, &mut reload_map, &cdir, prev_mod_time).await {
-                                eprintln!("Error reloading config:\n{:?}::\n", err);
+                                error!("Error reloading config:\n{:?}::\n", err);
                                 set.shutdown().await;
                                 break;
                             }
@@ -490,7 +490,7 @@ pub async fn load_and_monitor(cdir: &Path, mut reload: mpsc::Receiver<()>) -> Re
             }
         }
 
-        eprintln!("Shutdown");
+        info!("Shutdown");
 
         let _ = finished_tx.send(());
     });
@@ -632,7 +632,7 @@ async fn load_and_start(
 
     if !service_map.is_empty() {
         if last_scanned != UNIX_EPOCH {
-            eprintln!(
+            error!(
                 "Managed services is not currently supported for reload!\n{:?}\n",
                 service_map.keys().collect::<Vec<&String>>()
             );
@@ -640,7 +640,7 @@ async fn load_and_start(
             for (_, service) in service_map.drain() {
                 set.spawn(async move {
                     if let Err(err) = service.start().await {
-                        eprintln!(
+                        error!(
                             "Failed to start {}:\n{:?}\n",
                             service.cmd_name().unwrap_or_default(),
                             err
@@ -670,7 +670,7 @@ async fn load_and_start(
                     let is_tls = !d.cert_path().is_empty();
                     let res = listener::listen(addr, domains, rx, is_tls).await;
                     if let Err(err) = res {
-                        eprintln!("Listen err {:?}", err);
+                        error!("Listen err {:?}", err);
                     }
                 }
             });

@@ -1,4 +1,7 @@
-use crate::domain::{Domain, DomainMap};
+use crate::{
+    domain::{Domain, DomainMap},
+    error, info,
+};
 use hyper::server::conn::Http;
 use hyper::service::service_fn;
 use hyper::{Body, Request, Response};
@@ -24,7 +27,7 @@ async fn handler(req: Request<Body>, ip_addr: IpAddr, domain: Option<Domain>) ->
             },
         }
     } else {
-        eprintln!("{} 404 - no domain handler", req.uri().path());
+        info!("{} 404 - no domain handler", req.uri().path());
         Ok(Response::builder().status(404).body(Body::from("Not found\n"))?)
     }
 }
@@ -126,7 +129,7 @@ fn handle_hyper_result(res: Result<(), hyper::Error>) {
                 match e.kind() {
                     io::ErrorKind::UnexpectedEof => {}
                     _ => {
-                        eprintln!("An error occurred: {:?}", e);
+                        error!("An error occurred: {:?}", e);
                     }
                 }
             }
@@ -137,11 +140,11 @@ fn handle_hyper_result(res: Result<(), hyper::Error>) {
 async fn handle_error(err: io::Error, ip_addr: IpAddr, acceptor: &mut LazyConfigAcceptor<TcpStream>) {
     let msg = match err.kind() {
         io::ErrorKind::InvalidInput => {
-            eprintln!("{:?} - 400 Not a TLS handshake", ip_addr);
+            info!("{:?} - 400 Not a TLS handshake", ip_addr);
             "HTTP/1.1 400 Expected an HTTPS request\r\n\r\n\r\nExpected an HTTPS request\n".to_string()
         }
         _ => {
-            eprintln!("{:?} - 500 Server Error:\n{:?}\n", ip_addr, err);
+            info!("{:?} - 500 Server Error:\n{:?}\n", ip_addr, err);
             format!("HTTP/1.1 500 Server Error\r\n\r\n\r\n{:?}\n", err)
         }
     };

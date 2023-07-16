@@ -9,6 +9,39 @@ pub mod listener;
 pub mod location_path;
 pub mod static_files;
 
+pub const SRC_PATH: &str = env!("CARGO_MANIFEST_DIR");
+
+#[macro_export]
+macro_rules! info {
+    ($($arg:expr),*) => {
+        eprintln!("kafe info: {}",  format!($($arg,)*))
+        // eprintln!(
+        //     // split so that not found when looking for the word in an editor
+        //     "info: {}\n    at {}/{}:{}:{}",
+        //     format!($($arg,)*),
+        //     $crate::SRC_PATH,
+        //     file!(),
+        //     line!(),
+        //     column!()
+        // )
+    };
+}
+
+#[macro_export]
+macro_rules! error {
+    ($($arg:expr),*) => {
+        eprintln!(
+            // split so that not found when looking for the word in an editor
+            "error: {}\n    at {}/{}:{}:{}",
+            format!($($arg,)*),
+            $crate::SRC_PATH,
+            file!(),
+            line!(),
+            column!()
+        )
+    };
+}
+
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
 
