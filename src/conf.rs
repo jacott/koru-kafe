@@ -546,7 +546,7 @@ pub fn load_from(cdir: &Path, _modified_since: SystemTime) -> Result<(ListernerM
                     }
                 }
             }
-            let entry = listener_map.entry(l).or_insert(HashMap::new());
+            let entry = listener_map.entry(l).or_default();
             entry.insert(domain.name().to_owned(), domain.clone());
             for name in domain.aliases() {
                 entry.insert(name.to_string(), domain.clone());
@@ -729,8 +729,7 @@ mod tests {
 
     #[test]
     fn to_arg_list() -> crate::Result<()> {
-        let yaml =
-            yaml_rust::YamlLoader::load_from_str(r##"[1, 2, "th$r}ee", "f{ou}r${PWD}f$ve${HOME}", "${HOME}"] "##)?;
+        let yaml = yaml_rust::YamlLoader::load_from_str(r#"[1, 2, "th$r}ee", "f{ou}r${PWD}f$ve${HOME}", "${HOME}"] "#)?;
         let yaml = yaml[0].as_vec().unwrap();
 
         let exp = vec![

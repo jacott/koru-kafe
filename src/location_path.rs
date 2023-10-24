@@ -205,8 +205,8 @@ mod tests {
         );
 
         assert_eq!(
-            reduce(r#"{}} some }{,{\\{ edge, edge} \,}{ cases, {here} \\\\\}"#),
-            r#"{}} some }{,{\\ edge \,}{ cases, {here} \\\\\}, {}} some }{,{\\ edge \,}{ cases, {here} \\\\\}"#
+            reduce(r"{}} some }{,{\\{ edge, edge} \,}{ cases, {here} \\\\\}"),
+            r"{}} some }{,{\\ edge \,}{ cases, {here} \\\\\}, {}} some }{,{\\ edge \,}{ cases, {here} \\\\\}"
                 .to_string()
         );
     }

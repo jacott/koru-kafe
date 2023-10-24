@@ -30,12 +30,13 @@ macro_rules! info {
 #[macro_export]
 macro_rules! error {
     ($($arg:expr),*) => {
+        let f = file!();
         eprintln!(
             // split so that not found when looking for the word in an editor
             "error: {}\n    at {}/{}:{}:{}",
             format!($($arg,)*),
-            $crate::SRC_PATH,
-            file!(),
+            if f.starts_with('/') { &"" } else { $crate::SRC_PATH },
+            f,
             line!(),
             column!()
         )
