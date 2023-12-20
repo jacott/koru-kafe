@@ -12,6 +12,22 @@ pub mod static_files;
 pub const SRC_PATH: &str = env!("CARGO_MANIFEST_DIR");
 
 #[macro_export]
+macro_rules! fixme {
+    ($a:expr) => {
+        eprintln!(
+            // split so that not found when looking for the word in an editor
+            "fixme\
+             !{:?}\n    at {}/{}:{}:{}",
+            $a,
+            $crate::SRC_PATH,
+            file!(),
+            line!(),
+            column!()
+        )
+    };
+}
+
+#[macro_export]
 macro_rules! info {
     ($($arg:expr),*) => {
         eprintln!("kafe info: {}",  format!($($arg,)*))

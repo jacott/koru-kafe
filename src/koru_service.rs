@@ -2,7 +2,7 @@ use futures_util::{
     sink::SinkExt,
     stream::{SplitSink, SplitStream, StreamExt},
 };
-use hyper::{client::HttpConnector, http::HeaderValue, Body, Client, Request, Response, Version};
+use hyper::{client::HttpConnector, header::HOST, http::HeaderValue, Body, Client, Request, Response, Version};
 use hyper_tungstenite::{tungstenite::Message, HyperWebsocket, WebSocketStream};
 use std::{
     io,
@@ -57,6 +57,7 @@ fn convert_req(req: &mut Request<Body>, ip_addr: &IpAddr, scheme: &str, auth: &s
 
     let headers = req.headers_mut();
 
+    headers.insert(HOST, HeaderValue::from_str("localhost").unwrap());
     if let Ok(v) = HeaderValue::from_str(ip_addr.to_string().as_str()) {
         headers.insert("X-Real-IP", v);
     }
