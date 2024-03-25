@@ -1,9 +1,10 @@
 use async_trait::async_trait;
+use http_body_util::BodyExt;
 use hyper::{
-    client::HttpConnector,
+    body::Bytes,
     header,
     http::uri::{self, PathAndQuery},
-    Body, Client, Request, Response, StatusCode, Uri,
+    Response, StatusCode, Uri,
 };
 use radix_trie::Trie;
 use std::{
@@ -156,7 +157,7 @@ impl Domain {
         self.read_state().confs.get(path).cloned()
     }
 
-    pub fn handle_error(&self, err: crate::Error, path: &str) -> crate::Result<Response<Body>> {
+    pub fn handle_error(&self, err: crate::Error, path: &str) -> crate::ResultResp {
         if let Some(e) = err.downcast_ref::<io::Error>() {
             return match e.kind() {
                 io::ErrorKind::PermissionDenied => self.client_error(400, e.to_string(), path),
@@ -170,7 +171,7 @@ impl Domain {
             if e.is_user() {
                 return self.client_error(400, e.to_string(), path);
             }
-            if e.is_connect() {
+            if e.is_closed() {
                 return self.server_error(502, e.to_string(), path);
             }
             return self.server_error(500, e.to_string(), path);
@@ -179,17 +180,17 @@ impl Domain {
         self.server_error(500, err.to_string(), path)
     }
 
-    pub fn client_error(&self, code: u16, message: String, path: &str) -> crate::Result<Response<Body>> {
+    pub fn client_error(&self, code: u16, message: String, path: &str) -> crate::ResultResp {
         let msg = format!("{} {}{} Client error {}\n", code, self.shared.name, path, message);
         error!("{}", &msg);
-        Ok(Response::builder().status(code).body(msg.into())?)
+        Ok(crate::resp(code, Bytes::from(msg)))
     }
 
-    pub fn server_error(&self, code: u16, message: String, path: &str) -> crate::Result<Response<Body>> {
+    pub fn server_error(&self, code: u16, message: String, path: &str) -> crate::ResultResp {
         let msg = format!("{} {}{} Server error\n{}\n", code, self.shared.name, path, message);
         error!("{}", msg);
 
-        Ok(Response::builder().status(code).body(msg.into())?)
+        Ok(crate::resp(code, Bytes::from(msg)))
     }
 
     fn write_state(&self) -> RwLockWriteGuard<State> {
@@ -235,13 +236,7 @@ pub trait Conf {
 
 #[async_trait]
 pub trait Location {
-    async fn connect(
-        &self,
-        _domain: Domain,
-        _req: Request<Body>,
-        _ip_addr: IpAddr,
-        count: u16,
-    ) -> crate::Result<Response<Body>>;
+    async fn connect(&self, _domain: Domain, _req: crate::Req, _ip_addr: IpAddr, count: u16) -> crate::ResultResp;
 
     fn info(&self) -> String {
         "Location".to_string()
@@ -269,13 +264,7 @@ pub struct Rewrite {
 
 #[async_trait]
 impl Location for Rewrite {
-    async fn connect(
-        &self,
-        domain: Domain,
-        mut req: Request<Body>,
-        ip_addr: IpAddr,
-        count: u16,
-    ) -> crate::Result<Response<Body>> {
+    async fn connect(&self, domain: Domain, mut req: crate::Req, ip_addr: IpAddr, count: u16) -> crate::ResultResp {
         if count > 2 {
             return Err("nested connect count exceeded for Rewrite".into());
         }
@@ -310,13 +299,7 @@ pub struct Redirect {
 
 #[async_trait]
 impl Location for Redirect {
-    async fn connect(
-        &self,
-        _domain: Domain,
-        req: Request<Body>,
-        _ip_addr: IpAddr,
-        _count: u16,
-    ) -> crate::Result<Response<Body>> {
+    async fn connect(&self, _domain: Domain, req: crate::Req, _ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
         let mut parts = req.uri().clone().into_parts();
 
         if let Some(v) = &self.scheme {
@@ -349,7 +332,7 @@ impl Location for Redirect {
         Ok(Response::builder()
             .status(self.code)
             .header(header::LOCATION, Uri::from_parts(parts)?.to_string())
-            .body(Body::empty())?)
+            .body(crate::empty_body())?)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -364,14 +347,8 @@ pub struct File {
 
 #[async_trait]
 impl Location for File {
-    async fn connect(
-        &self,
-        _domain: Domain,
-        req: Request<Body>,
-        _ip_addr: IpAddr,
-        _count: u16,
-    ) -> crate::Result<Response<Body>> {
-        static_files::send_file(req, &self.opts).await
+    async fn connect(&self, _domain: Domain, req: crate::Req, _ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
+        static_files::send_file(req.into_parts().0, &self.opts).await
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -382,19 +359,12 @@ impl Location for File {
 #[derive(Debug)]
 pub struct HttpProxy {
     pub server_socket: String,
-    pub(crate) client: Client<HttpConnector>,
 }
 
 #[async_trait]
 impl Location for HttpProxy {
-    async fn connect(
-        &self,
-        _domain: Domain,
-        req: Request<Body>,
-        ip_addr: IpAddr,
-        _count: u16,
-    ) -> crate::Result<Response<Body>> {
-        koru_service::pass(req, ip_addr, self.client.clone(), &self.server_socket).await
+    async fn connect(&self, _domain: Domain, req: crate::Req, ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
+        koru_service::pass(req, ip_addr, &self.server_socket).await
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -409,13 +379,7 @@ pub struct WebsocketProxy {
 
 #[async_trait]
 impl Location for WebsocketProxy {
-    async fn connect(
-        &self,
-        _domain: Domain,
-        mut req: Request<Body>,
-        ip_addr: IpAddr,
-        _count: u16,
-    ) -> crate::Result<Response<Body>> {
+    async fn connect(&self, _domain: Domain, mut req: crate::Req, ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
         let (response, ws) = hyper_tungstenite::upgrade(&mut req, None)?;
 
         let server_socket = self.server_socket.clone();
@@ -426,7 +390,12 @@ impl Location for WebsocketProxy {
             }
         });
 
-        Ok(response)
+        let (parts, body) = response.into_parts();
+
+        Ok(Response::from_parts(
+            parts,
+            body.map_err(|err| crate::Error::from(err.to_string())).boxed(),
+        ))
     }
 
     fn as_any(&self) -> &dyn Any {

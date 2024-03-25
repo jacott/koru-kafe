@@ -2,9 +2,8 @@ use crate::{
     domain::{Domain, DomainMap},
     error, info,
 };
-use hyper::server::conn::Http;
 use hyper::service::service_fn;
-use hyper::{Body, Request, Response};
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::net::IpAddr;
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -14,7 +13,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_rustls::{rustls, LazyConfigAcceptor};
 
-async fn handler(req: Request<Body>, ip_addr: IpAddr, domain: Option<Domain>) -> crate::Result<Response<Body>> {
+async fn handler(req: crate::Req, ip_addr: IpAddr, domain: Option<Domain>) -> crate::ResultResp {
     if let Some(domain) = domain {
         match domain.find_location(req.uri().path()) {
             None => domain.handle_error(
@@ -28,7 +27,7 @@ async fn handler(req: Request<Body>, ip_addr: IpAddr, domain: Option<Domain>) ->
         }
     } else {
         info!("{} 404 - no domain handler", req.uri().path());
-        Ok(Response::builder().status(404).body(Body::from("Not found\n"))?)
+        Ok(crate::resp_404())
     }
 }
 
@@ -82,12 +81,11 @@ pub async fn listen(
                             {
                                 Ok(stream) => {
                                     handle_hyper_result(
-                                        Http::new()
-                                            .serve_connection(
-                                                stream,
+                                        hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+                                            .serve_connection_with_upgrades(
+                                                TokioIo::new(stream),
                                                 service_fn(move |req| handler(req, ip_addr, Some(domain.clone()))),
                                             )
-                                            .with_upgrades()
                                             .await,
                                     );
                                 }
@@ -105,16 +103,15 @@ pub async fn listen(
         } else {
             tokio::spawn(async move {
                 handle_hyper_result(
-                    Http::new()
-                        .serve_connection(
-                            stream,
+                    hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+                        .serve_connection_with_upgrades(
+                            TokioIo::new(stream),
                             service_fn(move |req| {
                                 let host = crate::host_from_req(&req);
                                 let domain = with_domain(host, &domains);
                                 handler(req, ip_addr, domain)
                             }),
                         )
-                        .with_upgrades()
                         .await,
                 );
             });
@@ -122,16 +119,11 @@ pub async fn listen(
     }
 }
 
-fn handle_hyper_result(res: Result<(), hyper::Error>) {
+fn handle_hyper_result(res: crate::Result<()>) {
     if let Err(e) = res {
-        if let Some(e) = e.into_cause() {
-            if let Ok(e) = e.downcast::<io::Error>() {
-                match e.kind() {
-                    io::ErrorKind::UnexpectedEof => {}
-                    _ => {
-                        error!("An error occurred: {:?}", e);
-                    }
-                }
+        if let Ok(e) = e.downcast::<hyper::Error>() {
+            if !e.is_user() {
+                error!("An error occurred: {:?}", e);
             }
         }
     }

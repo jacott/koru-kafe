@@ -1,5 +1,6 @@
+use http::request::Parts;
 use httpdate::HttpDate;
-use hyper::{header, http::HeaderValue, Body, Method, Request, Response};
+use hyper::{body::Bytes, header, http::HeaderValue, Method, Response};
 use std::{io, os::linux::fs::MetadataExt, time::SystemTime};
 use tokio::fs;
 
@@ -10,13 +11,13 @@ pub struct Opts {
     pub cache_control: String,
 }
 
-pub async fn send_file(req: Request<Body>, opts: &Opts) -> crate::Result<Response<Body>> {
-    let url_path = req.uri().path();
+pub async fn send_file(req: Parts, opts: &Opts) -> crate::ResultResp {
+    let url_path = req.uri.path();
     if url_path.contains('\\') || url_path.ends_with("/..") || url_path.contains("/../") {
-        return Ok(Response::builder().status(400).body(Body::from("Bad Request\n"))?);
+        return Ok(crate::resp(400, Bytes::from("Bad Request\n")));
     }
 
-    let headers = req.headers();
+    let headers = req.headers;
     let mut path = opts.root.to_string();
     path += url_path;
     let len = path.len();
@@ -43,12 +44,14 @@ pub async fn send_file(req: Request<Body>, opts: &Opts) -> crate::Result<Respons
         }
         if let Ok(md) = fs::metadata(&path).await {
             let last_modified = crate::round_time_secs(md.modified().expect("modified not supported"));
+            crate::fixme!((123, &mime_type,));
 
             let mut rb = Response::builder()
                 .header(header::CONTENT_TYPE, &mime_type)
                 .header(header::CONTENT_LENGTH, md.st_size())
                 .header(header::LAST_MODIFIED, HttpDate::from(last_modified).to_string())
                 .header(header::CACHE_CONTROL, &opts.cache_control);
+
             if !unencryped {
                 rb = rb.header(
                     header::CONTENT_ENCODING,
@@ -58,21 +61,21 @@ pub async fn send_file(req: Request<Body>, opts: &Opts) -> crate::Result<Respons
 
             if let Some(if_modified_since) = if_modified_since {
                 if if_modified_since == last_modified {
-                    return Ok(rb.status(304).body(Body::empty())?);
+                    return Ok(rb.status(304).body(crate::empty_body())?);
                 }
             }
 
-            if req.method() == Method::HEAD {
-                return Ok(rb.status(200).body(Body::empty())?);
+            if req.method == Method::HEAD {
+                return Ok(rb.status(200).body(crate::empty_body())?);
             }
 
             return match fs::read(&path).await {
-                Ok(body) => Ok(rb.status(200).body(Body::from(body))?),
+                Ok(body) => Ok(rb.status(200).body(crate::full_body(Bytes::from(body)))?),
                 Err(err) => match err.kind() {
                     io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied => {
                         continue;
                     }
-                    _ => Ok(Response::builder().status(500).body(Body::from(err.to_string()))?),
+                    _ => Ok(crate::resp(500, Bytes::from(err.to_string()))),
                 },
             };
         }
@@ -206,13 +209,13 @@ mod tests {
             cache_control: "max-age=2000".to_string(),
         };
 
-        let req = Request::builder()
+        let req = crate::Request::builder()
             .uri("/hello.txt")
             .header(header::ACCEPT_ENCODING, "*")
-            .body(Body::empty())
-            .unwrap();
+            .body(())?;
 
-        let res = super::send_file(req, &opts).await.unwrap();
+        let parts = req.into_parts().0;
+        let res = super::send_file(parts, &opts).await.unwrap();
 
         assert_eq!(res.status().as_u16(), 200);
         assert_eq!(res.headers().get(header::CONTENT_TYPE).unwrap(), "text/plain");
@@ -231,9 +234,11 @@ mod tests {
             cache_control: "max-age=2000".to_string(),
         };
 
-        let req = Request::builder().uri("/no-suffix").body(Body::empty()).unwrap();
+        let req = crate::Request::builder().uri("/no-suffix").body(())?;
 
-        let res = super::send_file(req, &opts).await.unwrap();
+        let parts = req.into_parts().0;
+        let res = super::send_file(parts, &opts).await.unwrap();
+        crate::fixme!((&res,));
 
         assert_eq!(res.status().as_u16(), 200);
         assert_eq!(res.headers().get(header::CONTENT_TYPE).unwrap(), "text/html");

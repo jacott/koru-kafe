@@ -1,6 +1,10 @@
 use std::time::{Duration, SystemTime};
 
-use hyper::{header, Request};
+use http_body_util::{combinators, BodyExt, Empty, Full};
+use hyper::{
+    body::{Body, Bytes, Incoming},
+    header, Request, Response,
+};
 
 pub mod conf;
 pub mod domain;
@@ -8,6 +12,9 @@ pub mod koru_service;
 pub mod listener;
 pub mod location_path;
 pub mod static_files;
+
+#[cfg(test)]
+pub mod test_util;
 
 pub const SRC_PATH: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -62,6 +69,33 @@ macro_rules! error {
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
 
+pub type BoxBody = combinators::BoxBody<Bytes, crate::Error>;
+pub type Req = Request<Incoming>;
+pub type Resp = Response<BoxBody>;
+pub type ResultResp = Result<Resp>;
+
+pub fn full_body<T: Into<Bytes>>(chunk: T) -> BoxBody {
+    Full::new(chunk.into()).map_err(|never| match never {}).boxed()
+}
+pub fn resp<T: Into<Bytes>>(code: u16, chunk: T) -> Resp {
+    Response::builder().status(code).body(full_body(chunk)).unwrap()
+}
+
+pub fn static_resp(code: u16, chunk: &'static str) -> Resp {
+    Response::builder()
+        .status(code)
+        .body(full_body(Bytes::from(chunk)))
+        .unwrap()
+}
+
+pub fn resp_404() -> Resp {
+    static_resp(404, "Not found\n")
+}
+
+fn empty_body() -> BoxBody {
+    Empty::new().map_err(|never| match never {}).boxed()
+}
+
 pub fn round_time_secs(time: SystemTime) -> SystemTime {
     SystemTime::UNIX_EPOCH
         + Duration::new(
@@ -72,7 +106,7 @@ pub fn round_time_secs(time: SystemTime) -> SystemTime {
         )
 }
 
-pub fn host_from_req<T>(req: &Request<T>) -> Option<&str> {
+pub fn host_from_req(req: &Request<impl Body>) -> Option<&str> {
     if let Some(host_raw) = req.headers().get(header::HOST) {
         if let Ok(host_raw) = host_raw.to_str() {
             return Some(match host_raw.rfind(':') {

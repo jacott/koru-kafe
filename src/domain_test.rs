@@ -1,29 +1,28 @@
+use http::Request;
+
+use crate::test_util;
+
 use super::*;
-use hyper::body::to_bytes;
 use std::net::Ipv4Addr;
 
 struct Foo;
 
 #[async_trait]
 impl Location for Foo {
-    async fn connect(
-        &self,
-        _domain: Domain,
-        req: Request<Body>,
-        _ip_addr: IpAddr,
-        _count: u16,
-    ) -> crate::Result<Response<Body>> {
+    async fn connect(&self, _domain: Domain, req: crate::Req, _ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
         let ans = tokio::join!(tokio::task::spawn(async move { req }));
         let req = ans.0.unwrap();
-        Ok(Response::builder()
-            .body((format!("hello {:?} {}", req.method(), req.uri())).into())
-            .unwrap())
+        Ok(crate::resp(
+            200,
+            Bytes::from(format!("hello {:?} {}", req.method(), req.uri())),
+        ))
     }
 
     fn as_any(&self) -> &dyn Any {
         self
     }
 }
+
 #[tokio::test]
 async fn connect() {
     let d: Domain = Default::default();
@@ -31,12 +30,12 @@ async fn connect() {
         .location_prefixes
         .insert("/".to_string(), Arc::new(Foo {}));
 
-    let req = Default::default();
+    let req = crate::Request::new(test_util::build_incoming_body(Bytes::new()).await.unwrap());
     let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
     let resp = d.find_location("/").unwrap().connect(d, req, ip_addr, 0).await.unwrap();
-
-    assert_eq!(to_bytes(resp.into_body()).await.unwrap(), "hello GET /");
+    let whole_body = resp.collect().await.unwrap().to_bytes();
+    assert_eq!(whole_body, "hello GET /");
 }
 
 #[tokio::test]
@@ -52,18 +51,14 @@ async fn rewrite() {
         }),
     );
 
-    let req = Request::builder()
-        .uri("http://localhost/?abc=123")
-        .body(Body::empty())
-        .unwrap();
+    let body = test_util::build_incoming_body(Bytes::new()).await.unwrap();
+    let req = Request::builder().uri("http://localhost/?abc=123").body(body).unwrap();
     let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
     let resp = d.find_location("/").unwrap().connect(d, req, ip_addr, 0).await.unwrap();
+    let whole_body = resp.collect().await.unwrap().to_bytes();
 
-    assert_eq!(
-        to_bytes(resp.into_body()).await.unwrap(),
-        "hello GET http://localhost/index.html?abc=123"
-    );
+    assert_eq!(whole_body, "hello GET http://localhost/index.html?abc=123");
 }
 
 #[tokio::test]
@@ -81,7 +76,7 @@ async fn redirect() -> crate::Result<()> {
 
     let req = Request::builder()
         .uri("http://localhost/a/b/c?abc=123")
-        .body(Body::empty())
+        .body(test_util::build_incoming_body(Bytes::new()).await.unwrap())
         .unwrap();
     let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
@@ -92,8 +87,9 @@ async fn redirect() -> crate::Result<()> {
         String::from_utf8(resp.headers().get(header::LOCATION).unwrap().as_bytes().to_vec())?.as_str(),
         "https://localhost/a/b/c?abc=123"
     );
+    let whole_body = resp.collect().await.unwrap().to_bytes();
 
-    assert_eq!(to_bytes(resp.into_body()).await.unwrap(), "");
+    assert_eq!(whole_body, "");
 
     Ok(())
 }

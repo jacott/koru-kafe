@@ -5,7 +5,7 @@ use crate::{
     static_files,
 };
 use directories::ProjectDirs;
-use hyper::{Client, StatusCode};
+use hyper::StatusCode;
 use lazy_static::lazy_static;
 use mime_guess::Mime;
 use serde_derive::{Deserialize, Serialize};
@@ -22,7 +22,10 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::JoinSet,
 };
-use tokio_rustls::rustls;
+use tokio_rustls::rustls::{
+    self,
+    pki_types::{CertificateDer, PrivateKeyDer},
+};
 pub use yaml_rust::{yaml, Yaml, YamlLoader};
 
 pub type ListernerMap = HashMap<String, DomainMap>;
@@ -159,7 +162,6 @@ impl LocationBuilder for HttpProxyBuilder {
             Some(s) => match domain.get_service(s) {
                 Some(proxy) => Ok(Arc::new(domain::HttpProxy {
                     server_socket: proxy.server_socket.clone(),
-                    client: Client::builder().set_host(false).build_http(),
                 })),
                 None => Err(format!("Proxy not found! {}", s)),
             },
@@ -246,7 +248,7 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
     if docs.len() != 1 {
         return Err(ConfError::new(path, "first line", "expected Hash"));
     }
-    if let Some(Yaml::Hash(map)) = docs.get(0) {
+    if let Some(Yaml::Hash(map)) = docs.first() {
         let get_opt_field = |f: &str| map.get(&Yaml::String(f.to_string()));
         let get_field = |f: &str| match get_opt_field(f) {
             None => Err(ConfError::new(path, f, "Missing field")),
@@ -557,15 +559,14 @@ pub fn load_from(cdir: &Path, _modified_since: SystemTime) -> Result<(ListernerM
 }
 
 fn set_cert(domain: &mut Domain) -> Result<Arc<rustls::ServerConfig>, String> {
-    let mut cert = PathBuf::from(domain.cert_path());
-    let mut priv_key = cert.clone();
-    cert.push("fullchain.pem");
-    priv_key.push("privkey.pem");
-    let cert = load_certs(&cert).map_err(|e| format!("bad cert {:?}: {}", cert, e))?;
-    let priv_key = load_key(&priv_key).map_err(|e| format!("bad privkey {:?}: {}", priv_key, e))?;
+    let mut cert_path = PathBuf::from(domain.cert_path());
+    let mut priv_key_path = cert_path.clone();
+    cert_path.push("fullchain.pem");
+    priv_key_path.push("privkey.pem");
+    let cert = load_certs(&cert_path).map_err(|e| format!("bad cert {:?}: {}", cert_path, e))?;
+    let priv_key = load_key(&priv_key_path).map_err(|e| format!("bad privkey {:?}: {}", priv_key_path, e))?;
 
     match rustls::ServerConfig::builder()
-        .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(cert, priv_key)
     {
@@ -582,22 +583,18 @@ fn set_cert(domain: &mut Domain) -> Result<Arc<rustls::ServerConfig>, String> {
     }
 }
 
-fn load_certs(path: &Path) -> io::Result<Vec<rustls::Certificate>> {
-    rustls_pemfile::certs(&mut io::BufReader::new(fs::File::open(path)?))
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
-        .map(|mut certs| certs.drain(..).map(rustls::Certificate).collect())
+fn load_certs(path: &Path) -> io::Result<Vec<CertificateDer<'static>>> {
+    rustls_pemfile::certs(&mut io::BufReader::new(fs::File::open(path)?)).collect()
 }
 
-fn load_key(path: &Path) -> io::Result<rustls::PrivateKey> {
+fn load_key(path: &Path) -> io::Result<PrivateKeyDer<'static>> {
     let keyfile = fs::File::open(path)?;
     let mut reader = io::BufReader::new(keyfile);
-
-    loop {
-        match rustls_pemfile::read_one(&mut reader)? {
-            Some(rustls_pemfile::Item::RSAKey(key)) => return Ok(rustls::PrivateKey(key)),
-            Some(rustls_pemfile::Item::PKCS8Key(key)) => return Ok(rustls::PrivateKey(key)),
-            Some(rustls_pemfile::Item::ECKey(key)) => return Ok(rustls::PrivateKey(key)),
-            None => break,
+    for item in std::iter::from_fn(|| rustls_pemfile::read_one(&mut reader).transpose()) {
+        match item? {
+            rustls_pemfile::Item::Pkcs1Key(key) => return Ok(PrivateKeyDer::Pkcs1(key)),
+            rustls_pemfile::Item::Pkcs8Key(key) => return Ok(PrivateKeyDer::Pkcs8(key)),
+            rustls_pemfile::Item::Sec1Key(key) => return Ok(PrivateKeyDer::Sec1(key)),
             _ => {}
         }
     }

@@ -2,8 +2,10 @@ use futures_util::{
     sink::SinkExt,
     stream::{SplitSink, SplitStream, StreamExt},
 };
-use hyper::{client::HttpConnector, header::HOST, http::HeaderValue, Body, Client, Request, Response, Version};
+use http_body_util::BodyExt;
+use hyper::{body::Body, header::HOST, http::HeaderValue, Request, Response, Version};
 use hyper_tungstenite::{tungstenite::Message, HyperWebsocket, WebSocketStream};
+use hyper_util::rt::TokioIo;
 use std::{
     io,
     net::IpAddr,
@@ -52,7 +54,7 @@ impl Service {
     }
 }
 
-fn convert_req(req: &mut Request<Body>, ip_addr: &IpAddr, scheme: &str, auth: &str) -> Result<()> {
+fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr, scheme: &str, auth: &str) -> Result<()> {
     *req.version_mut() = Version::HTTP_11;
 
     let headers = req.headers_mut();
@@ -73,7 +75,12 @@ fn convert_req(req: &mut Request<Body>, ip_addr: &IpAddr, scheme: &str, auth: &s
     Ok(())
 }
 
-pub async fn websocket(fut: HyperWebsocket, req: Request<Body>, from_addr: &IpAddr, to_authority: &str) -> Result<()> {
+pub async fn websocket(
+    fut: HyperWebsocket,
+    req: Request<impl Body>,
+    from_addr: &IpAddr,
+    to_authority: &str,
+) -> Result<()> {
     let (mut wss_s, mut wss_r) = ws_connect_server(req, from_addr, to_authority).await?;
 
     let ws_r = fut.await?;
@@ -117,7 +124,7 @@ pub async fn websocket(fut: HyperWebsocket, req: Request<Body>, from_addr: &IpAd
 }
 
 pub async fn ws_connect_server(
-    mut req: Request<Body>,
+    mut req: Request<impl Body>,
     from_addr: &IpAddr,
     to_authority: &str,
 ) -> Result<(
@@ -134,13 +141,23 @@ pub async fn ws_connect_server(
     Ok(ws_w.split())
 }
 
-pub async fn pass(
-    mut req: Request<Body>,
-    ip_addr: IpAddr,
-    client: Client<HttpConnector>,
-    to_authority: &str,
-) -> crate::Result<Response<Body>> {
+pub async fn pass(mut req: crate::Req, ip_addr: IpAddr, to_authority: &str) -> crate::ResultResp {
     convert_req(&mut req, &ip_addr, "http", to_authority)?;
 
-    Ok(client.request(req).await?)
+    let host = req.uri().host().expect("uri has no host");
+    let port = req.uri().port_u16().unwrap_or(80);
+    let out_addr = format!("{}:{}", host, port);
+    let client_stream = TcpStream::connect(out_addr.to_string()).await?;
+    let io = TokioIo::new(client_stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
+    tokio::task::spawn(async move {
+        if let Err(err) = conn.await {
+            println!("Connection failed: {:?}", err);
+        }
+    });
+
+    let web_res = sender.send_request(req).await?;
+
+    let (parts, body) = web_res.into_parts();
+    Ok(Response::from_parts(parts, body.map_err(|err| err.into()).boxed()))
 }

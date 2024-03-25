@@ -7,26 +7,28 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1.35.0", features = ["full"] }
-hyper = { version = "0.14.27", features = ["http1", "http2", "server", "client", "runtime", "tcp", "stream"] }
-mime_guess = "2.0.4"
-bytes = "1.4.0"
-directories = "5.0.1"
-yaml-rust = "0.4.5"
-serde = "1.0.164"
-serde_derive = "1.0.164"
-radix_trie = "0.2.1"
-lazy_static = "1.4.0"
-async-trait = "0.1.69"
-tokio-rustls = "0.24.1"
-rustls-pemfile = "1.0.3"
-env_logger = "0.10.0"
-log = "0.4.19"
-httpdate = "1.0.2"
-mime = "0.3.17"
-hyper-tungstenite = "0.11.1"
-tokio-tungstenite = "0.20.0"
-futures-util = "0.3.28"
+hyper = { version = "^1", features = ["full"] }
+tokio = { version = "^1", features = ["full"] }
+http-body-util = "^0.1"
+hyper-util = { version = "^0.1", features = ["full"] }
+mime_guess = "^2"
+directories = "^5"
+yaml-rust = "^0.4"
+serde = "^1"
+serde_derive = "^1"
+radix_trie = "^0.2"
+lazy_static = "^1.4"
+async-trait = "^0.1"
+tokio-rustls = "^0.26"
+rustls-pemfile = "^2"
+env_logger = "^0.11"
+log = "^0.4"
+httpdate = "^1"
+mime = "^0.3"
+hyper-tungstenite = "^0.14"
+tokio-tungstenite = "^0.23"
+futures-util = "^0.3"
+http = "^1"
 
 [dev-dependencies]
-tokio-test = "0.4.2"
+tokio-test = "^0.4"
