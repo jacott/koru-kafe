@@ -44,8 +44,6 @@ pub async fn send_file(req: Parts, opts: &Opts) -> crate::ResultResp {
         }
         if let Ok(md) = fs::metadata(&path).await {
             let last_modified = crate::round_time_secs(md.modified().expect("modified not supported"));
-            crate::fixme!((123, &mime_type,));
-
             let mut rb = Response::builder()
                 .header(header::CONTENT_TYPE, &mime_type)
                 .header(header::CONTENT_LENGTH, md.st_size())
@@ -238,7 +236,6 @@ mod tests {
 
         let parts = req.into_parts().0;
         let res = super::send_file(parts, &opts).await.unwrap();
-        crate::fixme!((&res,));
 
         assert_eq!(res.status().as_u16(), 200);
         assert_eq!(res.headers().get(header::CONTENT_TYPE).unwrap(), "text/html");

@@ -54,7 +54,7 @@ impl Service {
     }
 }
 
-fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr, scheme: &str, auth: &str) -> Result<()> {
+fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr, prefix: Option<&str>) -> Result<()> {
     *req.version_mut() = Version::HTTP_11;
 
     let headers = req.headers_mut();
@@ -64,13 +64,12 @@ fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr, scheme: &str, aut
         headers.insert("X-Real-IP", v);
     }
 
-    let uri_str = format!(
-        "{}://{}{}",
-        scheme,
-        auth,
-        req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/")
-    );
-    *req.uri_mut() = uri_str.parse()?;
+    let uri_str = req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/");
+
+    match prefix {
+        Some(v) => *req.uri_mut() = format!("{}{}", v, uri_str).parse()?,
+        None => *req.uri_mut() = uri_str.parse()?,
+    };
 
     Ok(())
 }
@@ -131,23 +130,20 @@ pub async fn ws_connect_server(
     SplitSink<WebSocketStream<TcpStream>, Message>,
     SplitStream<WebSocketStream<TcpStream>>,
 )> {
-    convert_req(&mut req, from_addr, "ws", to_authority)?;
+    let prefix = format!("ws://{}", to_authority);
+    convert_req(&mut req, from_addr, Some(&prefix))?;
     let stream = TcpStream::connect(to_authority).await?;
 
     let req = req.map(|_| ());
 
-    let (ws_w, _) = tokio_tungstenite::client_async(req, stream).await?;
+    let ws_w = tokio_tungstenite::client_async(req, stream).await?.0;
 
     Ok(ws_w.split())
 }
 
 pub async fn pass(mut req: crate::Req, ip_addr: IpAddr, to_authority: &str) -> crate::ResultResp {
-    convert_req(&mut req, &ip_addr, "http", to_authority)?;
-
-    let host = req.uri().host().expect("uri has no host");
-    let port = req.uri().port_u16().unwrap_or(80);
-    let out_addr = format!("{}:{}", host, port);
-    let client_stream = TcpStream::connect(out_addr.to_string()).await?;
+    convert_req(&mut req, &ip_addr, None)?;
+    let client_stream = TcpStream::connect(to_authority).await?;
     let io = TokioIo::new(client_stream);
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
     tokio::task::spawn(async move {
