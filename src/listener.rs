@@ -137,11 +137,11 @@ async fn handle_error(err: io::Error, ip_addr: IpAddr, acceptor: &mut LazyConfig
         }
         _ => {
             info!("{:?} - 500 Server Error:\n{:?}\n", ip_addr, err);
-            format!("HTTP/1.1 500 Server Error\r\n\r\n\r\n{:?}\n", err)
+            format!("HTTP/1.1 500 Server Error\r\n\r\n\r\n{err:?}\n")
         }
     };
     if let Some(mut stream) = acceptor.take_io() {
-        stream.write_all(msg.as_bytes()).await.unwrap();
+        let _ = stream.write_all(msg.as_bytes()).await;
     }
 }
 
