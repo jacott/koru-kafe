@@ -99,7 +99,7 @@ impl LocationBuilder for RedirectBuilder {
 
                 for (k, v) in h {
                     match k.as_str() {
-                        None => return Err(format!("Unexpected error at {:?}", k)),
+                        None => return Err(format!("Unexpected error at {k:?}")),
                         Some(k) => {
                             if k == "code" {
                                 if let Some(i) = v.as_i64() {
@@ -115,12 +115,12 @@ impl LocationBuilder for RedirectBuilder {
                                         "authority" => rw.authority = Some(v.to_string()),
                                         "path" => rw.path = Some(v.to_string()),
                                         "query" => rw.query = Some(v.to_string()),
-                                        _ => return Err(format!("Unexpected field: {}", k)),
+                                        _ => return Err(format!("Unexpected field: {k}")),
                                     }
                                     continue;
                                 }
 
-                                return Err(format!("Invalid field value: {:?}", k));
+                                return Err(format!("Invalid field value: {k:?}"));
                             }
                         }
                     }
@@ -163,7 +163,7 @@ impl LocationBuilder for HttpProxyBuilder {
                 Some(proxy) => Ok(Arc::new(domain::HttpProxy {
                     server_socket: proxy.server_socket.clone(),
                 })),
-                None => Err(format!("Proxy not found! {}", s)),
+                None => Err(format!("Proxy not found! {s}")),
             },
             None => Err("Invalid http_proxy rule; expected string".to_string()),
         }
@@ -178,7 +178,7 @@ impl LocationBuilder for WebsocketProxyBuilder {
                 Some(proxy) => Ok(Arc::new(domain::WebsocketProxy {
                     server_socket: proxy.server_socket.clone(),
                 })),
-                None => Err(format!("Proxy not found! {}", s)),
+                None => Err(format!("Proxy not found! {s}")),
             },
             None => Err("Invalid websocket_proxy rule; expected string".to_string()),
         }
@@ -303,10 +303,10 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
         {
             let conf_builders = CONF_BUILDERS.map.read().expect("Should get read lock");
             for (field, builder) in conf_builders.iter() {
-                if let Some(yaml) = get_opt_field(field) {
-                    if let Err(err) = builder.load_yaml(&domain, yaml) {
-                        return Err(ConfError::new(path, field, &err));
-                    }
+                if let Some(yaml) = get_opt_field(field)
+                    && let Err(err) = builder.load_yaml(&domain, yaml)
+                {
+                    return Err(ConfError::new(path, field, &err));
                 }
             }
         }
@@ -316,7 +316,7 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
             for (k, v) in paths {
                 let k = k.as_str().unwrap_or("");
                 if v.as_hash().is_none() {
-                    return Err(cerr(field, &format!("Invalid services value {:?}", v)));
+                    return Err(cerr(field, &format!("Invalid services value {v:?}")));
                 }
                 domain.add_service(k.to_string(), Arc::new(load_services(path, k, v)?));
             }
@@ -330,7 +330,7 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
                     return Err(cerr(field, "Invalid path"));
                 }
                 if v.as_hash().is_none() {
-                    return Err(cerr(field, &format!("Invalid value {:?}", v)));
+                    return Err(cerr(field, &format!("Invalid value {v:?}")));
                 }
                 let loc = load_location(&domain, path, k, v)?;
                 for k in expand_path(k) {
@@ -362,12 +362,12 @@ fn load_services(path: &Path, k: &str, v: &Yaml) -> Result<koru_service::Service
                     }
                 }
                 "cmd" => {
-                    if let Some(mut v) = sv.as_vec().and_then(|v| to_env_string_list(v)) {
-                        if v.len() > 1 {
-                            let mut iter = v.drain(..);
-                            service.cmd = Some((iter.next().unwrap(), iter.next().unwrap(), iter.collect()));
-                            continue;
-                        }
+                    if let Some(mut v) = sv.as_vec().and_then(|v| to_env_string_list(v))
+                        && v.len() > 1
+                    {
+                        let mut iter = v.drain(..);
+                        service.cmd = Some((iter.next().unwrap(), iter.next().unwrap(), iter.collect()));
+                        continue;
                     }
                 }
                 _ => (),
@@ -375,7 +375,7 @@ fn load_services(path: &Path, k: &str, v: &Yaml) -> Result<koru_service::Service
             return Err(ConfError::new(
                 path,
                 k,
-                &format!("Invalid service field {:?}!\n{:?}", sk, v),
+                &format!("Invalid service field {sk:?}!\n{v:?}"),
             ));
         }
     }
@@ -399,7 +399,7 @@ pub fn to_env_string(v: &str) -> String {
     let v = v.to_string();
     let mut prev = 0;
     let mut result = String::new();
-    for (i, matched) in v.match_indices(|c| matches!(c, '$' | '}')) {
+    for (i, matched) in v.match_indices(['$', '}']) {
         match matched {
             "$" => {
                 result += &v[prev..i];
@@ -431,20 +431,18 @@ pub fn to_env_string(v: &str) -> String {
 fn load_location(domain: &Domain, path: &Path, k: &str, v: &Yaml) -> Result<Arc<DynLocation>, ConfError> {
     if let Some(v) = v.as_hash() {
         let mut iter = v.iter();
-        if let Some(t) = iter.next() {
-            if iter.next().is_none() {
-                if let Some(name) = t.0.as_str() {
-                    if let Some(lb) = LocationBuilders::get(name) {
-                        return lb
-                            .yaml_to_location(domain, t.1)
-                            .map_err(|e| ConfError::new(path, name, &e));
-                    }
-                }
-            }
+        if let Some(t) = iter.next()
+            && iter.next().is_none()
+            && let Some(name) = t.0.as_str()
+            && let Some(lb) = LocationBuilders::get(name)
+        {
+            return lb
+                .yaml_to_location(domain, t.1)
+                .map_err(|e| ConfError::new(path, name, &e));
         }
     }
 
-    Err(ConfError::new(path, k, &format!("Invalid value {:?}", v)))
+    Err(ConfError::new(path, k, &format!("Invalid value {v:?}")))
 }
 
 pub fn default_cfg() -> Result<PathBuf, ConfError> {
@@ -533,20 +531,19 @@ pub fn load_from(cdir: &Path, _modified_since: SystemTime) -> Result<(ListernerM
             }
         }
         for l in listeners {
-            if let Some(dm) = listener_map.get(&l) {
-                if let Some(v) = dm.values().next() {
-                    if v.cert_path().is_empty() != domain.cert_path().is_empty() {
-                        return Err(ConfError::new(
-                            cdir,
-                            "cert_path",
-                            &format!(
-                                "Mixed TLS and Plain domains on listener: {} and {}\n",
-                                v.name(),
-                                domain.name()
-                            ),
-                        ));
-                    }
-                }
+            if let Some(dm) = listener_map.get(&l)
+                && let Some(v) = dm.values().next()
+                && v.cert_path().is_empty() != domain.cert_path().is_empty()
+            {
+                return Err(ConfError::new(
+                    cdir,
+                    "cert_path",
+                    &format!(
+                        "Mixed TLS and Plain domains on listener: {} and {}\n",
+                        v.name(),
+                        domain.name()
+                    ),
+                ));
             }
             let entry = listener_map.entry(l).or_default();
             entry.insert(domain.name().to_owned(), domain.clone());
@@ -563,8 +560,8 @@ fn set_cert(domain: &mut Domain) -> Result<Arc<rustls::ServerConfig>, String> {
     let mut priv_key_path = cert_path.clone();
     cert_path.push("fullchain.pem");
     priv_key_path.push("privkey.pem");
-    let cert = load_certs(&cert_path).map_err(|e| format!("bad cert {:?}: {}", cert_path, e))?;
-    let priv_key = load_key(&priv_key_path).map_err(|e| format!("bad privkey {:?}: {}", priv_key_path, e))?;
+    let cert = load_certs(&cert_path).map_err(|e| format!("bad cert {cert_path:?}: {e}"))?;
+    let priv_key = load_key(&priv_key_path).map_err(|e| format!("bad privkey {priv_key_path:?}: {e}"))?;
 
     match rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -601,7 +598,7 @@ fn load_key(path: &Path) -> io::Result<PrivateKeyDer<'static>> {
 
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
-        format!("no keys found in {:?} (encrypted keys not supported)", path),
+        format!("no keys found in {path:?} (encrypted keys not supported)"),
     ))
 }
 
@@ -610,7 +607,7 @@ fn yaml_get_opt_string(h: &yaml::Hash, field: &str) -> Result<Option<String>, St
         if let Some(v) = v.as_str() {
             Ok(Some(v.to_string()))
         } else {
-            Err(format!("field {} not a string", field))
+            Err(format!("field {field} not a string"))
         }
     } else {
         Ok(None)
@@ -650,13 +647,13 @@ async fn load_and_start(
 
     for (addr, domains) in domain_map {
         if let Some(tx) = reload_map.get_mut(&addr) {
-            println!("Reloading Server listening on {}", addr);
+            println!("Reloading Server listening on {addr}");
 
             if let Err(err) = tx.send(domains).await {
                 return Err(ConfError::new(cdir, &addr, err.to_string().as_str()));
             }
         } else {
-            println!("Listening on {}", addr);
+            println!("Listening on {addr}");
 
             let (tx, rx) = mpsc::channel(1);
 
@@ -667,7 +664,7 @@ async fn load_and_start(
                     let is_tls = !d.cert_path().is_empty();
                     let res = listener::listen(addr, domains, rx, is_tls).await;
                     if let Err(err) = res {
-                        error!("Listen err {:?}", err);
+                        error!("Listen err {err:?}");
                     }
                 }
             });

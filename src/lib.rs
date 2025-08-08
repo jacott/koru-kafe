@@ -56,10 +56,9 @@ macro_rules! error {
         let f = file!();
         eprintln!(
             // split so that not found when looking for the word in an editor
-            "error: {}\n    at {}/{}:{}:{}",
+            "error: {}\n    at {}/{f}:{}:{}",
             format!($($arg,)*),
             if f.starts_with('/') { &"" } else { $crate::SRC_PATH },
-            f,
             line!(),
             column!()
         )
@@ -107,19 +106,19 @@ pub fn round_time_secs(time: SystemTime) -> SystemTime {
 }
 
 pub fn host_from_req(req: &Request<impl Body>) -> Option<&str> {
-    if let Some(host_raw) = req.headers().get(header::HOST) {
-        if let Ok(host_raw) = host_raw.to_str() {
-            return Some(match host_raw.rfind(':') {
-                Some(idx) => {
-                    if host_raw[idx + 1..].parse::<u16>().is_ok() {
-                        &host_raw[..idx]
-                    } else {
-                        host_raw
-                    }
+    if let Some(host_raw) = req.headers().get(header::HOST)
+        && let Ok(host_raw) = host_raw.to_str()
+    {
+        return Some(match host_raw.rfind(':') {
+            Some(idx) => {
+                if host_raw[idx + 1..].parse::<u16>().is_ok() {
+                    &host_raw[..idx]
+                } else {
+                    host_raw
                 }
-                None => host_raw,
-            });
-        }
+            }
+            None => host_raw,
+        });
     }
     None
 }

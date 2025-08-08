@@ -193,11 +193,11 @@ impl Domain {
         Ok(crate::resp(code, Bytes::from(msg)))
     }
 
-    fn write_state(&self) -> RwLockWriteGuard<State> {
+    fn write_state(&self) -> RwLockWriteGuard<'_, State> {
         self.shared.state.write().expect("should lock state")
     }
 
-    fn read_state(&self) -> RwLockReadGuard<State> {
+    fn read_state(&self) -> RwLockReadGuard<'_, State> {
         self.shared.state.read().expect("should lock state")
     }
 
@@ -206,10 +206,10 @@ impl Domain {
         service_map: &mut HashMap<String, Arc<koru_service::Service>>,
     ) -> Result<(), (String, String)> {
         for (name, service) in self.read_state().services.iter() {
-            if let Some(cmd) = service.cmd_name() {
-                if service_map.insert(cmd.to_string(), service.clone()).is_some() {
-                    return Err((name.to_string(), format!("Duplicate service app {}", cmd)));
-                }
+            if let Some(cmd) = service.cmd_name()
+                && service_map.insert(cmd.to_string(), service.clone()).is_some()
+            {
+                return Err((name.to_string(), format!("Duplicate service app {cmd}")));
             }
         }
 
@@ -306,7 +306,7 @@ impl Location for Redirect {
             parts.scheme = Some(uri::Scheme::from_str(v)?);
             if let Some(v) = &self.authority {
                 parts.authority = Some(uri::Authority::from_str(v)?);
-            } else if let Some(v) = crate::host_from_req(&req) {
+            } else if let Some(v) = req.uri().host() {
                 parts.authority = Some(uri::Authority::from_str(v)?);
             }
         } else if let Some(v) = &self.authority {
@@ -319,12 +319,12 @@ impl Location for Redirect {
 
         parts.path_and_query = Some(if let Some(p) = &self.path {
             if let Some(q) = &self.query {
-                PathAndQuery::from_str(&format!("{}?{}", p, q))?
+                PathAndQuery::from_str(&format!("{p}?{q}"))?
             } else {
                 PathAndQuery::from_str(p)?
             }
         } else if let Some(q) = &self.query {
-            PathAndQuery::from_str(&format!("{}?{}", curr_pq.path(), q))?
+            PathAndQuery::from_str(&format!("{}?{q}", curr_pq.path()))?
         } else {
             curr_pq
         });

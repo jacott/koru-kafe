@@ -33,7 +33,7 @@ async fn fetch_incoming(stream: DuplexStream) -> Result<Incoming> {
 #[tokio::main]
 pub async fn main() -> Result<()> {
     let mut incoming = build_incoming_body("testing 123".into()).await?;
-    println!("incoming {:?}", incoming);
+    println!("incoming {incoming:?}");
     // Stream the body, writing each chunk to stdout as we get it
     // (instead of buffering and printing at the end).
     let mut ans = Bytes::new();
@@ -45,7 +45,7 @@ pub async fn main() -> Result<()> {
         }
     }
 
-    println!("msg: {:?}\n", ans);
+    println!("msg: {ans:?}\n");
     Ok(())
 }
 

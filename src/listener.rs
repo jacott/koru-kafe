@@ -49,7 +49,7 @@ pub async fn listen(
 ) -> crate::Result<()> {
     let listener = TcpListener::bind(&addr)
         .await
-        .map_err(|e| io::Error::new(e.kind(), format!("listen on {} failed - {}", addr, e)))?;
+        .map_err(|e| io::Error::new(e.kind(), format!("listen on {addr} failed - {e}")))?;
 
     let domains = Arc::new(Mutex::new(domains));
     let d2 = domains.clone();
@@ -120,12 +120,11 @@ pub async fn listen(
 }
 
 fn handle_hyper_result(res: crate::Result<()>) {
-    if let Err(e) = res {
-        if let Ok(e) = e.downcast::<hyper::Error>() {
-            if !e.is_user() {
-                error!("An error occurred: {:?}", e);
-            }
-        }
+    if let Err(e) = res
+        && let Ok(e) = e.downcast::<hyper::Error>()
+        && !e.is_user()
+    {
+        error!("An error occurred: {:?}", e);
     }
 }
 

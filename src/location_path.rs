@@ -87,7 +87,7 @@ impl From<Branches> for Vec<String> {
         }
         if braces {
             vec.iter()
-                .map(|line| format!("{}{}{}", OPEN_CHAR, line, CLOSE_CHAR))
+                .map(|line| format!("{OPEN_CHAR}{line}{CLOSE_CHAR}"))
                 .collect::<Vec<String>>()
         } else {
             vec
@@ -102,7 +102,7 @@ fn output(tokens: Vec<Token>) -> Vec<String> {
         let strings: Vec<String> = token.into();
         for root in &output {
             for string in &strings {
-                aux.push(format!("{}{}", root, string));
+                aux.push(format!("{root}{string}"));
             }
         }
         output = aux;

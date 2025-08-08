@@ -35,7 +35,7 @@ async fn fetch_url(url: hyper::Uri, stream: DuplexStream) -> Result<()> {
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
     tokio::task::spawn(async move {
         if let Err(err) = conn.await {
-            println!("Connection failed: {:?}", err);
+            println!("Connection failed: {err:?}");
         }
         println!("client done\n");
     });
@@ -86,7 +86,7 @@ pub async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send 
             .serve_connection(io, service_fn(hello))
             .await
         {
-            println!("Error serving connection: {:?}", err);
+            println!("Error serving connection: {err:?}");
         }
         println!("server done");
     });

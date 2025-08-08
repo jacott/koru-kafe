@@ -37,7 +37,7 @@ where
 
     let host = req.uri().host().expect("uri has no host");
     let port = req.uri().port_u16().unwrap_or(80);
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{host}:{port}");
 
     let client_stream = TcpStream::connect(addr).await.unwrap();
     let io = TokioIo::new(client_stream);
@@ -45,7 +45,7 @@ where
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
     tokio::task::spawn(async move {
         if let Err(err) = conn.await {
-            println!("Connection failed: {:?}", err);
+            println!("Connection failed: {err:?}");
         }
     });
 
@@ -66,7 +66,7 @@ pub async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send 
 
     // Bind to the port and listen for incoming TCP connections
     let listener = TcpListener::bind(addr).await?;
-    println!("Listening on http://{}", addr);
+    println!("Listening on http://{addr}");
     loop {
         // When an incoming TCP connection is received grab a TCP stream for
         // client<->server communication.
@@ -92,7 +92,7 @@ pub async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send 
                 .serve_connection(io, service_fn(hello))
                 .await
             {
-                println!("Error serving connection: {:?}", err);
+                println!("Error serving connection: {err:?}");
             }
         });
     }

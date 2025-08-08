@@ -67,7 +67,7 @@ fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr, prefix: Option<&s
     let uri_str = req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/");
 
     match prefix {
-        Some(v) => *req.uri_mut() = format!("{}{}", v, uri_str).parse()?,
+        Some(v) => *req.uri_mut() = format!("{v}{uri_str}").parse()?,
         None => *req.uri_mut() = uri_str.parse()?,
     };
 
@@ -130,7 +130,7 @@ pub async fn ws_connect_server(
     SplitSink<WebSocketStream<TcpStream>, Message>,
     SplitStream<WebSocketStream<TcpStream>>,
 )> {
-    let prefix = format!("ws://{}", to_authority);
+    let prefix = format!("ws://{to_authority}");
     convert_req(&mut req, from_addr, Some(&prefix))?;
     let stream = TcpStream::connect(to_authority).await?;
 
@@ -148,7 +148,7 @@ pub async fn pass(mut req: crate::Req, ip_addr: IpAddr, to_authority: &str) -> c
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
     tokio::task::spawn(async move {
         if let Err(err) = conn.await {
-            println!("Connection failed: {:?}", err);
+            println!("Connection failed: {err:?}");
         }
     });
 

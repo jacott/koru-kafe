@@ -57,10 +57,10 @@ pub async fn send_file(req: Parts, opts: &Opts) -> crate::ResultResp {
                 )
             }
 
-            if let Some(if_modified_since) = if_modified_since {
-                if if_modified_since == last_modified {
-                    return Ok(rb.status(304).body(crate::empty_body())?);
-                }
+            if let Some(if_modified_since) = if_modified_since
+                && if_modified_since == last_modified
+            {
+                return Ok(rb.status(304).body(crate::empty_body())?);
             }
 
             if req.method == Method::HEAD {
