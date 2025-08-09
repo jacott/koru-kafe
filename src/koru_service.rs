@@ -34,9 +34,10 @@ impl Service {
             let mut wait_time = 0;
             loop {
                 let now = SystemTime::now();
-                let mut child = Command::new(cmd).arg0(arg0).args(args).spawn()?;
+                let mut child = Command::new(cmd).arg0(arg0).args(args).kill_on_drop(true).spawn()?;
                 info!("Running ({}) {}: {} {:?}", child.id().unwrap_or(0), arg0, cmd, args);
                 child.wait().await?;
+                info!("Finished running {arg0} ({})", child.id().unwrap_or(0));
                 if now.elapsed().unwrap_or(ZERO_DUR).as_secs() > 300 {
                     wait_time = 0;
                 } else if wait_time == 0 {

@@ -1,6 +1,6 @@
 use crate::{
     domain::{self, Domain, DomainMap, DynLocation, Redirect},
-    error, info, koru_service, listener,
+    error, koru_service, listener,
     location_path::expand_path,
     static_files,
 };
@@ -452,7 +452,15 @@ pub fn default_cfg() -> Result<PathBuf, ConfError> {
     }
 }
 
-pub async fn load_and_monitor(cdir: &Path, mut reload: mpsc::Receiver<()>) -> Result<oneshot::Receiver<()>, ConfError> {
+pub enum ConfSig {
+    Reload,
+    Term,
+}
+
+pub async fn load_and_monitor(
+    cdir: &Path,
+    mut reload: mpsc::Receiver<ConfSig>,
+) -> Result<oneshot::Receiver<()>, ConfError> {
     let cdir = PathBuf::from(cdir);
     let last_scanned = crate::round_time_secs(SystemTime::now());
     let mut set = JoinSet::new();
@@ -472,7 +480,7 @@ pub async fn load_and_monitor(cdir: &Path, mut reload: mpsc::Receiver<()>) -> Re
                 }
                 r = reload.recv() => {
                     match r {
-                        Some(_) => {
+                        Some(ConfSig::Reload) => {
                             let prev_mod_time = last_scanned;
                             last_scanned = crate::round_time_secs(SystemTime::now());
                             if let Err(err) = load_and_start(&mut set, &mut reload_map, &cdir, prev_mod_time).await {
@@ -481,7 +489,7 @@ pub async fn load_and_monitor(cdir: &Path, mut reload: mpsc::Receiver<()>) -> Re
                                 break;
                             }
                         },
-                        None => {
+                        _ => {
                             set.shutdown().await;
                             break;
                         }
@@ -489,8 +497,6 @@ pub async fn load_and_monitor(cdir: &Path, mut reload: mpsc::Receiver<()>) -> Re
                 }
             }
         }
-
-        info!("Shutdown");
 
         let _ = finished_tx.send(());
     });
