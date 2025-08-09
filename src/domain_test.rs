@@ -74,22 +74,48 @@ async fn redirect() -> crate::Result<()> {
         }),
     );
 
-    let req = Request::builder()
-        .uri("http://localhost/a/b/c?abc=123")
-        .body(test_util::build_incoming_body(Bytes::new()).await.unwrap())
-        .unwrap();
-    let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+    let d2 = d.clone();
 
-    let resp = d.find_location("/").unwrap().connect(d, req, ip_addr, 0).await.unwrap();
+    {
+        let req = Request::builder()
+            .uri("http://localhost/a/b/c?abc=123")
+            .body(test_util::build_incoming_body(Bytes::new()).await.unwrap())
+            .unwrap();
+        let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
-    assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
-    assert_eq!(
-        String::from_utf8(resp.headers().get(header::LOCATION).unwrap().as_bytes().to_vec())?.as_str(),
-        "https://localhost/a/b/c?abc=123"
-    );
-    let whole_body = resp.collect().await.unwrap().to_bytes();
+        let resp = d.find_location("/").unwrap().connect(d, req, ip_addr, 0).await.unwrap();
 
-    assert_eq!(whole_body, "");
+        assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(
+            String::from_utf8(resp.headers().get(header::LOCATION).unwrap().as_bytes().to_vec())?.as_str(),
+            "https://localhost/a/b/c?abc=123"
+        );
+        let whole_body = resp.collect().await.unwrap().to_bytes();
+
+        assert_eq!(whole_body, "");
+    }
+
+    let d = d2;
+
+    {
+        let req = Request::builder()
+            .header("Host", "test.nz")
+            .uri("/a/b/c?abc=123")
+            .body(test_util::build_incoming_body(Bytes::new()).await.unwrap())
+            .unwrap();
+        let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+
+        let resp = d.find_location("/").unwrap().connect(d, req, ip_addr, 0).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(
+            String::from_utf8(resp.headers().get(header::LOCATION).unwrap().as_bytes().to_vec())?.as_str(),
+            "https://test.nz/a/b/c?abc=123"
+        );
+        let whole_body = resp.collect().await.unwrap().to_bytes();
+
+        assert_eq!(whole_body, "");
+    }
 
     Ok(())
 }

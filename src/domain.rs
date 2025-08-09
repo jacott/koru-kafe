@@ -301,15 +301,21 @@ impl Location for Redirect {
     async fn connect(&self, _domain: Domain, req: crate::Req, _ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
         let mut parts = req.uri().clone().into_parts();
 
-        if let Some(v) = &self.scheme {
-            parts.scheme = Some(uri::Scheme::from_str(v)?);
+        if let Some(scheme) = &self.scheme {
+            parts.scheme = Some(uri::Scheme::from_str(scheme)?);
             if let Some(v) = &self.authority {
                 parts.authority = Some(uri::Authority::from_str(v)?);
-            } else if let Some(v) = req.uri().host() {
+            } else if let Some(v) = req.uri().host().or_else(|| crate::host_from_req(&req)) {
                 parts.authority = Some(uri::Authority::from_str(v)?);
             }
         } else if let Some(v) = &self.authority {
             parts.authority = Some(uri::Authority::from_str(v)?);
+        } else {
+            let host = crate::host_from_req(&req);
+            if let Some(host) = host {
+                let authority = format!("https://{}", &host);
+                parts.authority = Some(uri::Authority::from_str(&authority)?);
+            }
         }
 
         let curr_pq = parts
