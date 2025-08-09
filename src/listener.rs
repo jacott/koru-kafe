@@ -13,8 +13,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_rustls::{rustls, LazyConfigAcceptor};
 
-async fn handler(req: crate::Req, ip_addr: IpAddr, domain: Option<Domain>) -> crate::ResultResp {
-    if let Some(domain) = domain {
+async fn handler(req: crate::Req, ip_addr: IpAddr, domains: Arc<Mutex<DomainMap>>) -> crate::ResultResp {
+    let host = req.uri().host().or_else(|| crate::host_from_req(&req));
+    if let Some(domain) = with_domain(host, &domains) {
         match domain.find_location(req.uri().path()) {
             None => domain.handle_error(
                 Box::new(io::Error::new(io::ErrorKind::NotFound, "Not Found")),
@@ -31,11 +32,12 @@ async fn handler(req: crate::Req, ip_addr: IpAddr, domain: Option<Domain>) -> cr
     }
 }
 
-fn with_domain(host: Option<&str>, domains: &DomainMap) -> Option<Domain> {
+fn with_domain(host: Option<&str>, domains: &Arc<Mutex<DomainMap>>) -> Option<Domain> {
+    let guard = domains.lock().expect("Should unlock");
     if let Some(host) = host {
-        Some(domains.get(host).or_else(|| domains.get("*"))?.clone())
+        Some(guard.get(host).or_else(|| guard.get("*"))?.clone())
     } else {
-        Some(domains.get("*")?.clone())
+        Some(guard.get("*")?.clone())
     }
 }
 
@@ -62,9 +64,9 @@ pub async fn listen(
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;
-        let domains = domains.lock().expect(SHOULD_LOCK).clone();
         let ip_addr = peer_addr.ip();
         if is_tls {
+            let domains = domains.clone();
             tokio::spawn(async move {
                 let acceptor = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream);
                 futures_util::pin_mut!(acceptor);
@@ -73,7 +75,6 @@ pub async fn listen(
                     Ok(start) => {
                         let client_hello = start.client_hello();
                         let host = client_hello.server_name();
-
                         if let Some(domain) = with_domain(host, &domains) {
                             match start
                                 .into_stream(domain.tls_config().clone().expect("TLS config"))
@@ -84,7 +85,7 @@ pub async fn listen(
                                         hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
                                             .serve_connection_with_upgrades(
                                                 TokioIo::new(stream),
-                                                service_fn(move |req| handler(req, ip_addr, Some(domain.clone()))),
+                                                service_fn(move |req| handler(req, ip_addr, domains.clone())),
                                             )
                                             .await,
                                     );
@@ -101,16 +102,13 @@ pub async fn listen(
                 }
             });
         } else {
+            let domains = domains.clone();
             tokio::spawn(async move {
                 handle_hyper_result(
                     hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
                         .serve_connection_with_upgrades(
                             TokioIo::new(stream),
-                            service_fn(move |req| {
-                                let host = crate::host_from_req(&req);
-                                let domain = with_domain(host, &domains);
-                                handler(req, ip_addr, domain)
-                            }),
+                            service_fn(move |req| handler(req, ip_addr, domains.clone())),
                         )
                         .await,
                 );
@@ -151,17 +149,24 @@ mod tests {
 
     #[test]
     fn with_domain() {
-        let mut dm: DomainMap = HashMap::new();
+        let dm = Arc::new(Mutex::new(HashMap::new()));
         assert!(super::with_domain(Some("foo"), &dm).is_none());
         assert!(super::with_domain(None, &dm).is_none());
 
         let any = Domain::builder().name("*".to_string()).build();
-        dm.insert("*".to_string(), any.clone());
+
+        {
+            let mut guard = dm.lock().unwrap();
+            guard.insert("*".to_string(), any.clone());
+        }
         let ans = super::with_domain(Some("foo"), &dm);
         assert!(ans.is_some());
         assert_eq!(ans.unwrap().name(), "*");
 
-        dm.insert("foo".to_string(), Domain::builder().name("foo".to_string()).build());
+        {
+            let mut guard = dm.lock().unwrap();
+            guard.insert("foo".to_string(), Domain::builder().name("foo".to_string()).build());
+        }
         let ans = super::with_domain(Some("foo"), &dm);
         assert!(ans.is_some());
         assert_eq!(ans.unwrap().name(), "foo");

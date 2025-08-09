@@ -182,7 +182,6 @@ impl Domain {
 
     pub fn client_error(&self, code: u16, message: String, path: &str) -> crate::ResultResp {
         let msg = format!("{} {}{} Client error {}\n", code, self.shared.name, path, message);
-        error!("{}", &msg);
         Ok(crate::resp(code, Bytes::from(msg)))
     }
 
