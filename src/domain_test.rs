@@ -62,7 +62,40 @@ async fn rewrite() {
 }
 
 #[tokio::test]
-async fn redirect() -> crate::Result<()> {
+async fn redirect_with_authority() -> crate::Result<()> {
+    let d: Domain = Default::default();
+
+    d.write_state().location_prefixes.insert(
+        "/".to_string(),
+        Arc::new(Redirect {
+            code: StatusCode::MOVED_PERMANENTLY,
+            authority: Some("www.test.nz".to_string()),
+            ..Default::default()
+        }),
+    );
+
+    let req = Request::builder()
+        .uri("http://localhost/a/b/c?abc=123")
+        .body(test_util::build_incoming_body(Bytes::new()).await.unwrap())
+        .unwrap();
+    let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+
+    let resp = d.find_location("/").unwrap().connect(d, req, ip_addr, 0).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(
+        String::from_utf8(resp.headers().get(header::LOCATION).unwrap().as_bytes().to_vec())?.as_str(),
+        "http://www.test.nz/a/b/c?abc=123"
+    );
+    let whole_body = resp.collect().await.unwrap().to_bytes();
+
+    assert_eq!(whole_body, "");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn redirect_with_scheme() -> crate::Result<()> {
     let d: Domain = Default::default();
 
     d.write_state().location_prefixes.insert(

@@ -303,24 +303,23 @@ impl Location for Redirect {
 
         if let Some(scheme) = &self.scheme {
             parts.scheme = Some(uri::Scheme::from_str(scheme)?);
-            if let Some(v) = &self.authority {
-                parts.authority = Some(uri::Authority::from_str(v)?);
-            } else if let Some(v) = req.uri().host().or_else(|| crate::host_from_req(&req)) {
-                parts.authority = Some(uri::Authority::from_str(v)?);
-            }
-        } else if let Some(v) = &self.authority {
-            parts.authority = Some(uri::Authority::from_str(v)?);
-        } else {
-            let host = crate::host_from_req(&req);
-            if let Some(host) = host {
-                let authority = format!("https://{}", &host);
-                parts.authority = Some(uri::Authority::from_str(&authority)?);
-            }
+        } else if parts.scheme.is_none() {
+            parts.scheme = Some(uri::Scheme::from_str("https")?);
         }
 
-        let curr_pq = parts
-            .path_and_query
-            .unwrap_or_else(|| PathAndQuery::from_str("/").expect("/ to be valid"));
+        if let Some(v) = &self.authority {
+            parts.authority = Some(uri::Authority::from_str(v)?);
+        } else if parts.authority.is_none()
+            && let Some(host) = req.uri().host().or_else(|| crate::host_from_req(&req))
+        {
+            parts.authority = Some(uri::Authority::from_str(host)?);
+        }
+
+        let curr_pq = || {
+            parts
+                .path_and_query
+                .unwrap_or_else(|| PathAndQuery::from_str("/").expect("/ to be valid"))
+        };
 
         parts.path_and_query = Some(if let Some(p) = &self.path {
             if let Some(q) = &self.query {
@@ -329,9 +328,9 @@ impl Location for Redirect {
                 PathAndQuery::from_str(p)?
             }
         } else if let Some(q) = &self.query {
-            PathAndQuery::from_str(&format!("{}?{q}", curr_pq.path()))?
+            PathAndQuery::from_str(&format!("{}?{q}", curr_pq().path()))?
         } else {
-            curr_pq
+            curr_pq()
         });
 
         Ok(Response::builder()
