@@ -75,6 +75,9 @@ pub async fn listen(
                     Ok(start) => {
                         let client_hello = start.client_hello();
                         let host = client_hello.server_name();
+                        if let Some(host) = &host {
+                            println!("{host}: hello {ip_addr}");
+                        }
                         if let Some(domain) = with_domain(host, &domains) {
                             match start
                                 .into_stream(domain.tls_config().clone().expect("TLS config"))
