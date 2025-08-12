@@ -8,6 +8,7 @@ use hyper::{
 
 pub mod conf;
 pub mod domain;
+pub mod hyper_websockets;
 pub mod koru_service;
 pub mod listener;
 pub mod location_path;
@@ -24,9 +25,8 @@ macro_rules! fixme {
         eprintln!(
             // split so that not found when looking for the word in an editor
             "fixme\
-             !{:?}\n    at {}/{}:{}:{}",
+             !{:?}\n    at {}:{}:{}",
             $a,
-            $crate::SRC_PATH,
             file!(),
             line!(),
             column!()
@@ -53,12 +53,11 @@ macro_rules! info {
 #[macro_export]
 macro_rules! error {
     ($($arg:expr),*) => {
-        let f = file!();
         eprintln!(
             // split so that not found when looking for the word in an editor
-            "error: {}\n    at {}/{f}:{}:{}",
+            "error: {}\n    at {}:{}:{}",
             format!($($arg,)*),
-            if f.starts_with('/') { &"" } else { $crate::SRC_PATH },
+            file!(),
             line!(),
             column!()
         )

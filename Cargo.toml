@@ -25,10 +25,12 @@ env_logger = "^0.11"
 log = "^0.4"
 httpdate = "^1"
 mime = "^0.3"
-hyper-tungstenite = "^0.18"
-tokio-tungstenite = "^0.27"
-futures-util = "^0.3"
+tokio-websockets = { version = "^0.12", features = ["client", "server", "ring", "rand"] }
+futures-util = { version = "^0.3", features = ["sink"] }
 http = "^1"
+sha1 = "^0.10"
+digest = "^0.10"
+data-encoding = "^2"
 
 [dev-dependencies]
 tokio-test = "^0.4"

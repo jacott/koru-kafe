@@ -383,17 +383,8 @@ pub struct WebsocketProxy {
 
 #[async_trait]
 impl Location for WebsocketProxy {
-    async fn connect(&self, _domain: Domain, mut req: crate::Req, ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
-        let (response, ws) = hyper_tungstenite::upgrade(&mut req, None)?;
-
-        let server_socket = self.server_socket.clone();
-
-        tokio::task::spawn(async move {
-            if let Err(e) = koru_service::websocket(ws, req, &ip_addr, &server_socket).await {
-                error!("Error in websocket connection: {}", e);
-            }
-        });
-
+    async fn connect(&self, _domain: Domain, req: crate::Req, ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
+        let response = koru_service::websocket(req, &ip_addr, &self.server_socket)?;
         let (parts, body) = response.into_parts();
 
         Ok(Response::from_parts(

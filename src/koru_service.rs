@@ -1,14 +1,20 @@
-use futures_util::{
-    sink::SinkExt,
-    stream::{SplitSink, SplitStream, StreamExt},
+use futures_util::{future::select, SinkExt, StreamExt};
+use http::{
+    header::{ACCEPT_ENCODING, ACCEPT_LANGUAGE, USER_AGENT},
+    HeaderName, Uri,
 };
-use http_body_util::BodyExt;
-use hyper::{body::Body, header::HOST, http::HeaderValue, Request, Response, Version};
-use hyper_tungstenite::{tungstenite::Message, HyperWebsocket, WebSocketStream};
+use http_body_util::{BodyExt, Empty};
+use hyper::{
+    body::{Body, Bytes},
+    header::HOST,
+    http::HeaderValue,
+    Request, Response, Version,
+};
 use hyper_util::rt::TokioIo;
 use std::{
     io,
     net::IpAddr,
+    pin::pin,
     sync::{
         atomic::{self, Ordering},
         Arc,
@@ -18,11 +24,17 @@ use std::{
 use tokio::{
     net::TcpStream,
     process::Command,
-    sync::{mpsc, Mutex},
-    task::JoinSet,
+    sync::{
+        mpsc::{self, error::TryRecvError},
+        Mutex,
+    },
 };
+use tokio_websockets::{ClientBuilder, Message};
 
-use crate::{info, Result};
+use crate::{
+    hyper_websockets::{self},
+    info, Result,
+};
 
 #[derive(Default, Debug)]
 pub struct Service {
@@ -64,6 +76,11 @@ impl Service {
     }
 }
 
+fn convert_uri(uri: &Uri, prefix: &str) -> String {
+    let uri_str = uri.path_and_query().map(|x| x.as_str()).unwrap_or("/");
+    format!("{prefix}{uri_str}")
+}
+
 fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr, prefix: Option<&str>) -> Result<()> {
     *req.version_mut() = Version::HTTP_11;
 
@@ -74,120 +91,136 @@ fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr, prefix: Option<&s
         headers.insert("X-Real-IP", v);
     }
 
-    let uri_str = req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/");
-
-    match prefix {
-        Some(v) => *req.uri_mut() = format!("{v}{uri_str}").parse()?,
-        None => *req.uri_mut() = uri_str.parse()?,
-    };
+    *req.uri_mut() = convert_uri(req.uri(), prefix.unwrap_or("")).parse()?;
 
     Ok(())
 }
 
-pub async fn websocket(
-    fut: HyperWebsocket,
-    req: Request<impl Body>,
-    from_addr: &IpAddr,
-    to_authority: &str,
-) -> Result<()> {
-    let (mut wss_s, mut wss_r) = ws_connect_server(req, from_addr, to_authority).await?;
+pub fn websocket(mut req: crate::Req, from_addr: &IpAddr, to_authority: &str) -> Result<Response<Empty<Bytes>>> {
+    const X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
+    let to_authority = format!("ws://{to_authority}");
 
-    let wsc = fut.await?;
-    let (mut wsc_s, mut wsc_r) = wsc.split();
-    let mut set = JoinSet::new();
+    let mut wss = ClientBuilder::from_uri(convert_uri(req.uri(), &to_authority).parse()?)
+        .add_header(X_REAL_IP, HeaderValue::from_str(from_addr.to_string().as_str())?)?;
 
-    let alive1 = Arc::new(atomic::AtomicBool::new(true));
-    let alive2 = alive1.clone();
-
-    let (wsc_tx, mut wsc_rx) = mpsc::channel(1);
-    let wsc_tx2 = wsc_tx.clone();
-
-    set.spawn(async move {
-        while let Some(msg) = wsc_rx.recv().await {
-            if wsc_s.send(msg).await.is_err() {
-                break;
-            }
+    for header in [ACCEPT_ENCODING, ACCEPT_LANGUAGE, USER_AGENT] {
+        if let Some(value) = req.headers_mut().get(&header) {
+            wss = wss.add_header(header, value.clone())?;
         }
-    });
+    }
 
-    set.spawn(async move {
-        while let Some(msg) = wsc_r.next().await {
-            match msg {
-                Ok(Message::Text(b)) if b.len() == 1 && b.as_bytes()[0] == b'H' => {
-                    alive2.store(true, Ordering::Relaxed);
-                    let now = SystemTime::now();
-                    let msg = Message::text(format!(
-                        "K{}",
-                        now.duration_since(UNIX_EPOCH).expect("UNIX_EPOCH").as_millis()
-                    ));
-                    if wsc_tx2.send(msg).await.is_err() {
-                        break;
-                    }
-                }
-                Ok(msg) => {
-                    alive2.store(true, Ordering::Relaxed);
-                    if wss_s.send(msg).await.is_err() {
-                        break;
-                    }
-                }
-                Err(_) => {
+    let from_addr = from_addr.to_string();
+    let response = hyper_websockets::upgrade_response(&mut req)?;
+
+    tokio::task::spawn(async move {
+        let wsc = match hyper_websockets::upgrade(&mut req).await {
+            Ok(v) => v,
+            Err(err) => {
+                info!("Upgrade failed {err:?}");
+                return;
+            }
+        };
+        let (mut wsc_s, mut wsc_r) = wsc.split();
+
+        let (wss, _) = match wss.connect().await {
+            Ok(v) => v,
+            Err(err) => {
+                info!("Server app connect failed {err:?}");
+                return;
+            }
+        };
+        let (mut wss_s, mut wss_r) = wss.split();
+
+        let (wsc_tx, mut wsc_rx) = mpsc::channel(2);
+        let wsc_tx2 = wsc_tx.clone();
+
+        let alive1 = Arc::new(atomic::AtomicBool::new(true));
+        let alive2 = alive1.clone();
+
+        let to_client = pin!(async move {
+            'outer: while let Some(msg) = wsc_rx.recv().await {
+                if wsc_s.feed(msg).await.is_err() {
                     break;
                 }
+                loop {
+                    match wsc_rx.try_recv() {
+                        Ok(msg) => {
+                            if wsc_s.feed(msg).await.is_err() {
+                                break 'outer;
+                            }
+                        }
+                        Err(TryRecvError::Empty) => {
+                            if wsc_s.flush().await.is_err() {
+                                break 'outer;
+                            }
+                            break;
+                        }
+                        Err(TryRecvError::Disconnected) => break 'outer,
+                    }
+                }
             }
-        }
-    });
+        });
 
-    set.spawn(async move {
-        while let Some(msg) = wss_r.next().await {
-            match msg {
-                Ok(msg) => {
-                    if wsc_tx.send(msg).await.is_err() {
+        let from_client = pin!(async move {
+            while let Some(msg) = wsc_r.next().await {
+                match msg {
+                    Ok(msg) if msg.is_text() && msg.as_payload().len() == 1 && msg.as_payload()[0] == b'H' => {
+                        alive2.store(true, Ordering::Relaxed);
+                        let now = SystemTime::now();
+                        let msg = Message::text(format!(
+                            "K{}",
+                            now.duration_since(UNIX_EPOCH).expect("UNIX_EPOCH").as_millis()
+                        ));
+                        if wsc_tx2.send(msg).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(msg) => {
+                        alive2.store(true, Ordering::Relaxed);
+                        if wss_s.send(msg).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => {
                         break;
                     }
                 }
-                Err(_) => {
-                    break;
+            }
+        });
+
+        const TIMEOUT: Duration = Duration::from_secs(30);
+
+        let from_app = pin!(async move {
+            while let Some(msg) = wss_r.next().await {
+                match msg {
+                    Ok(msg) => {
+                        if wsc_tx.send_timeout(msg, TIMEOUT).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        break;
+                    }
                 }
             }
-        }
-    });
+        });
 
-    set.spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(30)).await;
-            if !alive1.load(Ordering::Relaxed) {
-                break;
+        let timeout = pin!(async move {
+            loop {
+                tokio::time::sleep(TIMEOUT).await;
+                if !alive1.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                alive1.store(false, Ordering::Relaxed);
             }
+        });
 
-            alive1.store(false, Ordering::Relaxed);
-        }
+        let _ = select(select(to_client, from_app), select(from_client, timeout)).await;
+        info!("close socket - {:?}", from_addr);
     });
 
-    set.join_next().await;
-    set.shutdown().await;
-
-    info!("close socket - {:?}", from_addr);
-
-    Ok(())
-}
-
-pub async fn ws_connect_server(
-    mut req: Request<impl Body>,
-    from_addr: &IpAddr,
-    to_authority: &str,
-) -> Result<(
-    SplitSink<WebSocketStream<TcpStream>, Message>,
-    SplitStream<WebSocketStream<TcpStream>>,
-)> {
-    let prefix = format!("ws://{to_authority}");
-    convert_req(&mut req, from_addr, Some(&prefix))?;
-    let stream = TcpStream::connect(to_authority).await?;
-
-    let req = req.map(|_| ());
-
-    let ws_w = tokio_tungstenite::client_async(req, stream).await?.0;
-
-    Ok(ws_w.split())
+    Ok(response)
 }
 
 pub async fn pass(mut req: crate::Req, ip_addr: IpAddr, to_authority: &str) -> crate::ResultResp {
