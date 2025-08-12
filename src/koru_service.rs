@@ -9,9 +9,18 @@ use hyper_util::rt::TokioIo;
 use std::{
     io,
     net::IpAddr,
-    time::{Duration, SystemTime},
+    sync::{
+        atomic::{self, Ordering},
+        Arc,
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{net::TcpStream, process::Command, sync::Mutex};
+use tokio::{
+    net::TcpStream,
+    process::Command,
+    sync::{mpsc, Mutex},
+    task::JoinSet,
+};
 
 use crate::{info, Result};
 
@@ -83,42 +92,81 @@ pub async fn websocket(
 ) -> Result<()> {
     let (mut wss_s, mut wss_r) = ws_connect_server(req, from_addr, to_authority).await?;
 
-    let ws_r = fut.await?;
-    let (mut wsc_s, mut wsc_r) = ws_r.split();
+    let wsc = fut.await?;
+    let (mut wsc_s, mut wsc_r) = wsc.split();
+    let mut set = JoinSet::new();
 
-    tokio::spawn(async move {
+    let alive1 = Arc::new(atomic::AtomicBool::new(true));
+    let alive2 = alive1.clone();
+
+    let (wsc_tx, mut wsc_rx) = mpsc::channel(1);
+    let wsc_tx2 = wsc_tx.clone();
+
+    set.spawn(async move {
+        while let Some(msg) = wsc_rx.recv().await {
+            if wsc_s.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    set.spawn(async move {
         while let Some(msg) = wsc_r.next().await {
             match msg {
-                Ok(msg) => {
-                    if let Err(err) = wss_s.send(msg).await {
-                        info!("close socket - {:?}", err);
+                Ok(Message::Text(b)) if b.len() == 1 && b.as_bytes()[0] == b'H' => {
+                    alive2.store(true, Ordering::Relaxed);
+                    let now = SystemTime::now();
+                    let msg = Message::text(format!(
+                        "K{}",
+                        now.duration_since(UNIX_EPOCH).expect("UNIX_EPOCH").as_millis()
+                    ));
+                    if wsc_tx2.send(msg).await.is_err() {
                         break;
                     }
                 }
-                Err(err) => {
-                    info!("close socket - {:?}", err);
+                Ok(msg) => {
+                    alive2.store(true, Ordering::Relaxed);
+                    if wss_s.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => {
                     break;
                 }
             }
         }
     });
 
-    tokio::spawn(async move {
+    set.spawn(async move {
         while let Some(msg) = wss_r.next().await {
             match msg {
                 Ok(msg) => {
-                    if let Err(err) = wsc_s.send(msg).await {
-                        info!("close socket - {:?}", err);
+                    if wsc_tx.send(msg).await.is_err() {
                         break;
                     }
                 }
-                Err(err) => {
-                    info!("close socket - {:?}", err);
+                Err(_) => {
                     break;
                 }
             }
         }
     });
+
+    set.spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            if !alive1.load(Ordering::Relaxed) {
+                break;
+            }
+
+            alive1.store(false, Ordering::Relaxed);
+        }
+    });
+
+    set.join_next().await;
+    set.shutdown().await;
+
+    info!("close socket - {:?}", from_addr);
 
     Ok(())
 }
