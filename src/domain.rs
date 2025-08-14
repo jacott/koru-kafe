@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use http::uri::{InvalidUri, Parts};
 use http_body_util::BodyExt;
 use hyper::{
     body::Bytes,
@@ -19,7 +20,7 @@ use std::{
 };
 use tokio_rustls::rustls;
 
-use crate::{error, koru_service, static_files};
+use crate::{error, koru_service, static_files, BadRequestError};
 
 pub type DynLocation = dyn Location + Send + Sync;
 pub type RcDynLocation = Arc<DynLocation>;
@@ -177,6 +178,10 @@ impl Domain {
             return self.server_error(500, e.to_string(), path);
         }
 
+        if let Some(e) = err.downcast_ref::<BadRequestError>() {
+            return self.client_error(400, e.to_string(), path);
+        }
+
         self.server_error(500, err.to_string(), path)
     }
 
@@ -296,9 +301,8 @@ pub struct Redirect {
     pub query: Option<String>,
 }
 
-#[async_trait]
-impl Location for Redirect {
-    async fn connect(&self, _domain: Domain, req: crate::Req, _ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
+impl Redirect {
+    fn build_parts(&self, req: crate::Req) -> Result<Parts, InvalidUri> {
         let mut parts = req.uri().clone().into_parts();
 
         if let Some(scheme) = &self.scheme {
@@ -333,10 +337,28 @@ impl Location for Redirect {
             curr_pq()
         });
 
-        Ok(Response::builder()
-            .status(self.code)
-            .header(header::LOCATION, Uri::from_parts(parts)?.to_string())
-            .body(crate::empty_body())?)
+        Ok(parts)
+    }
+}
+
+#[async_trait]
+impl Location for Redirect {
+    async fn connect(&self, _domain: Domain, req: crate::Req, _ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
+        let parts = self.build_parts(req).map_err(|err| BadRequestError(err.to_string()))?;
+        if parts.authority.is_none() {
+            Err(Box::new(BadRequestError("Missing authority".to_string())))
+        } else {
+            Ok(Response::builder()
+                .status(self.code)
+                .header(
+                    header::LOCATION,
+                    Uri::from_parts(parts)
+                        .map_err(|err| BadRequestError(err.to_string()))?
+                        .to_string(),
+                )
+                .body(crate::empty_body())
+                .map_err(|err| BadRequestError(err.to_string()))?)
+        }
     }
 
     fn as_any(&self) -> &dyn Any {

@@ -1,6 +1,6 @@
 use crate::{
     domain::{Domain, DomainMap},
-    error, info,
+    info,
 };
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -85,6 +85,7 @@ pub async fn listen(
                             {
                                 Ok(stream) => {
                                     handle_hyper_result(
+                                        ip_addr,
                                         hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
                                             .serve_connection_with_upgrades(
                                                 TokioIo::new(stream),
@@ -108,6 +109,7 @@ pub async fn listen(
             let domains = domains.clone();
             tokio::spawn(async move {
                 handle_hyper_result(
+                    ip_addr,
                     hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
                         .serve_connection_with_upgrades(
                             TokioIo::new(stream),
@@ -120,27 +122,16 @@ pub async fn listen(
     }
 }
 
-fn handle_hyper_result(res: crate::Result<()>) {
-    if let Err(e) = res
-        && let Ok(e) = e.downcast::<hyper::Error>()
-        && !e.is_user()
-    {
-        error!("An error occurred: {:?}", e);
+fn handle_hyper_result(peer_addr: IpAddr, res: crate::Result<()>) {
+    if let Err(e) = res {
+        info!("{peer_addr:?} - {e}");
     }
 }
 
-async fn handle_error(err: io::Error, ip_addr: IpAddr, acceptor: &mut LazyConfigAcceptor<TcpStream>) {
-    let msg = match err.kind() {
-        io::ErrorKind::InvalidInput => {
-            info!("{:?} - 400 Not a TLS handshake", ip_addr);
-            "HTTP/1.1 400 Expected an HTTPS request\r\n\r\n\r\nExpected an HTTPS request\n".to_string()
-        }
-        _ => {
-            info!("{:?} - 500 Server Error:\n{:?}\n", ip_addr, err);
-            format!("HTTP/1.1 500 Server Error\r\n\r\n\r\n{err:?}\n")
-        }
-    };
+async fn handle_error(err: io::Error, peer_addr: IpAddr, acceptor: &mut LazyConfigAcceptor<TcpStream>) {
+    info!("{peer_addr:?} - 400 Bad Request: {}", &err);
     if let Some(mut stream) = acceptor.take_io() {
+        let msg = format!("HTTP/1.1 400 Bad Request\r\n\r\n\r\n{err}\n");
         let _ = stream.write_all(msg.as_bytes()).await;
     }
 }

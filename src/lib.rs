@@ -1,9 +1,11 @@
-use std::time::{Duration, SystemTime};
-
 use http_body_util::{combinators, BodyExt, Empty, Full};
 use hyper::{
     body::{Body, Bytes, Incoming},
     header, Request, Response,
+};
+use std::{
+    fmt,
+    time::{Duration, SystemTime},
 };
 
 pub mod conf;
@@ -63,6 +65,17 @@ macro_rules! error {
         )
     };
 }
+
+#[derive(Debug)]
+pub struct BadRequestError(String);
+
+impl fmt::Display for BadRequestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Bad Request: {}\r\n", self.0)
+    }
+}
+
+impl std::error::Error for BadRequestError {}
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;

@@ -8,7 +8,7 @@ use tokio_websockets::{server, upgrade};
 
 pub type UpgradedWebsocket = tokio_websockets::WebSocketStream<TokioIo<Upgraded>>;
 
-pub fn upgrade_response(request: &mut crate::Req) -> crate::Result<Response<Empty<Bytes>>> {
+pub fn upgrade_response(request: &crate::Req) -> crate::Result<Response<Empty<Bytes>>> {
     let key = request
         .headers()
         .get("Sec-WebSocket-Key")

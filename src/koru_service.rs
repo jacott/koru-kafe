@@ -97,20 +97,21 @@ fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr, prefix: Option<&s
 }
 
 pub fn websocket(mut req: crate::Req, from_addr: &IpAddr, to_authority: &str) -> Result<Response<Empty<Bytes>>> {
+    let response = hyper_websockets::upgrade_response(&req)?;
     const X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
-    let to_authority = format!("ws://{to_authority}");
+    let prefix = format!("ws://{to_authority}");
+    let to_authority = to_authority.to_owned();
 
-    let mut wss = ClientBuilder::from_uri(convert_uri(req.uri(), &to_authority).parse()?)
+    let mut wss = ClientBuilder::from_uri(convert_uri(req.uri(), &prefix).parse()?)
         .add_header(X_REAL_IP, HeaderValue::from_str(from_addr.to_string().as_str())?)?;
 
     for header in [ACCEPT_ENCODING, ACCEPT_LANGUAGE, USER_AGENT] {
-        if let Some(value) = req.headers_mut().get(&header) {
+        if let Some(value) = req.headers().get(&header) {
             wss = wss.add_header(header, value.clone())?;
         }
     }
 
     let from_addr = from_addr.to_string();
-    let response = hyper_websockets::upgrade_response(&mut req)?;
 
     tokio::task::spawn(async move {
         let wsc = match hyper_websockets::upgrade(&mut req).await {
@@ -122,10 +123,18 @@ pub fn websocket(mut req: crate::Req, from_addr: &IpAddr, to_authority: &str) ->
         };
         let (mut wsc_s, mut wsc_r) = wsc.split();
 
-        let (wss, _) = match wss.connect().await {
+        let stream = match TcpStream::connect(&to_authority).await {
             Ok(v) => v,
             Err(err) => {
-                info!("Server app connect failed {err:?}");
+                info!("Server app connect failed {to_authority} {err:?}");
+                return;
+            }
+        };
+
+        let (wss, _) = match wss.connect_on(stream).await {
+            Ok(v) => v,
+            Err(err) => {
+                info!("Server app upgrade failed {err:?}");
                 return;
             }
         };
