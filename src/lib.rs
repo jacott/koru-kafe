@@ -37,7 +37,7 @@ macro_rules! fixme {
 #[macro_export]
 macro_rules! info {
     ($($arg:expr),*) => {
-        eprintln!("kafe info: {}",  format!($($arg,)*))
+        println!("kafe info: {}",  format!($($arg,)*))
         // eprintln!(
         //     // split so that not found when looking for the word in an editor
         //     "info: {}\n    at {}/{}:{}:{}",
