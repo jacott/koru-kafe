@@ -161,39 +161,38 @@ impl Domain {
     pub fn handle_error(&self, err: crate::Error, path: &str) -> crate::ResultResp {
         if let Some(e) = err.downcast_ref::<io::Error>() {
             return match e.kind() {
-                io::ErrorKind::PermissionDenied => self.client_error(400, e.to_string(), path),
-                io::ErrorKind::NotFound => self.client_error(404, e.to_string(), path),
+                io::ErrorKind::PermissionDenied => self.client_error(400),
+                io::ErrorKind::NotFound => self.client_error(404),
                 io::ErrorKind::ConnectionRefused => self.server_error(502, e.to_string(), path),
                 _ => self.server_error(500, e.to_string(), path),
             };
         }
 
         if let Some(e) = err.downcast_ref::<hyper::Error>() {
-            if e.is_user() {
-                return self.client_error(400, e.to_string(), path);
+            if e.is_user() || e.is_parse() {
+                return self.client_error(400);
             }
-            if e.is_closed() {
-                return self.server_error(502, e.to_string(), path);
-            }
-            return self.server_error(500, e.to_string(), path);
+            return self.server_error(503, e.to_string(), path);
         }
 
-        if let Some(e) = err.downcast_ref::<BadRequestError>() {
-            return self.client_error(400, e.to_string(), path);
+        if err.downcast_ref::<BadRequestError>().is_some() {
+            return self.client_error(400);
         }
 
         self.server_error(500, err.to_string(), path)
     }
 
-    pub fn client_error(&self, code: u16, message: String, path: &str) -> crate::ResultResp {
-        let msg = format!("{} {}{} Client error {}\n", code, self.shared.name, path, message);
+    pub fn client_error(&self, code: u16) -> crate::ResultResp {
+        let sc = StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST);
+        let msg = sc.canonical_reason().unwrap_or("Bad Request");
         Ok(crate::resp(code, Bytes::from(msg)))
     }
 
     pub fn server_error(&self, code: u16, message: String, path: &str) -> crate::ResultResp {
-        let msg = format!("{} {}{} Server error\n{}\n", code, self.shared.name, path, message);
-        error!("{}", msg);
+        error!("{code} {}{} Server error\n{}\n", self.shared.name, path, message);
 
+        let sc = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let msg = sc.canonical_reason().unwrap_or("Unknown");
         Ok(crate::resp(code, Bytes::from(msg)))
     }
 

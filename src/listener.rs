@@ -131,8 +131,9 @@ fn handle_hyper_result(peer_addr: IpAddr, res: crate::Result<()>) {
 async fn handle_error(err: io::Error, peer_addr: IpAddr, acceptor: &mut LazyConfigAcceptor<TcpStream>) {
     info!("{peer_addr:?} - 400 Bad Request: {}", &err);
     if let Some(mut stream) = acceptor.take_io() {
-        let msg = format!("HTTP/1.1 400 Bad Request\r\n\r\n\r\n{err}\n");
-        let _ = stream.write_all(msg.as_bytes()).await;
+        let _ = stream
+            .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n\r\nBad Request\n")
+            .await;
     }
 }
 
