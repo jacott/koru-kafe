@@ -32,8 +32,9 @@ use tokio::{
 use tokio_websockets::{ClientBuilder, Message};
 
 use crate::{
-    hyper_websockets::{self},
-    info, Result,
+    info,
+    websockets::{self},
+    Result,
 };
 
 #[derive(Default, Debug)]
@@ -97,7 +98,7 @@ fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr, prefix: Option<&s
 }
 
 pub fn websocket(mut req: crate::Req, from_addr: &IpAddr, to_authority: &str) -> Result<Response<Empty<Bytes>>> {
-    let response = hyper_websockets::upgrade_response(&req)?;
+    let response = websockets::upgrade_response(&req)?;
     const X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
     let prefix = format!("ws://{to_authority}");
     let to_authority = to_authority.to_owned();
@@ -114,7 +115,7 @@ pub fn websocket(mut req: crate::Req, from_addr: &IpAddr, to_authority: &str) ->
     let from_addr = from_addr.to_string();
 
     tokio::task::spawn(async move {
-        let wsc = match hyper_websockets::upgrade(&mut req).await {
+        let wsc = match websockets::upgrade(&mut req).await {
             Ok(v) => v,
             Err(err) => {
                 info!("Upgrade failed {err:?}");

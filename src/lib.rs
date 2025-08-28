@@ -1,20 +1,23 @@
-use http_body_util::{combinators, BodyExt, Empty, Full};
-use hyper::{
-    body::{Body, Bytes, Incoming},
-    header, Request, Response,
-};
 use std::{
     fmt,
     time::{Duration, SystemTime},
 };
 
+use http_body_util::{combinators, BodyExt, Empty, Full};
+use hyper::{
+    body::{Body, Incoming},
+    header, Request, Response,
+};
+
+pub use hyper::body::Bytes;
+
 pub mod conf;
 pub mod domain;
-pub mod hyper_websockets;
 pub mod koru_service;
 pub mod listener;
 pub mod location_path;
 pub mod static_files;
+pub mod websockets;
 
 #[cfg(test)]
 pub mod test_util;
