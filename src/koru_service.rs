@@ -1,3 +1,14 @@
+use std::{
+    io,
+    net::IpAddr,
+    pin::pin,
+    sync::{
+        atomic::{self, Ordering},
+        Arc,
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
 use futures_util::{future::select, SinkExt, StreamExt};
 use http::{
     header::{ACCEPT_ENCODING, ACCEPT_LANGUAGE, USER_AGENT},
@@ -11,16 +22,6 @@ use hyper::{
     Request, Response, Version,
 };
 use hyper_util::rt::TokioIo;
-use std::{
-    io,
-    net::IpAddr,
-    pin::pin,
-    sync::{
-        atomic::{self, Ordering},
-        Arc,
-    },
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
 use tokio::{
     net::TcpStream,
     process::Command,

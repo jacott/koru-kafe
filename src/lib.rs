@@ -3,13 +3,14 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use http::StatusCode;
 use http_body_util::{combinators, BodyExt, Empty, Full};
+pub use hyper::body::Bytes;
 use hyper::{
     body::{Body, Incoming},
     header, Request, Response,
 };
-
-pub use hyper::body::Bytes;
+pub use tracing::{error, info};
 
 pub mod conf;
 pub mod domain;
@@ -26,47 +27,18 @@ pub const SRC_PATH: &str = env!("CARGO_MANIFEST_DIR");
 
 #[macro_export]
 macro_rules! fixme {
-    ($a:expr) => {
-        eprintln!(
+    ($a:expr) => {{
+        extern crate std;
+        std::eprintln!(
             // split so that not found when looking for the word in an editor
-            "fixme\
-             !{:?}\n    at {}:{}:{}",
+            "FIXME\
+             ! at ./{}:{}:{}\n{:?}",
+            file!(),
+            line!(),
+            column!(),
             $a,
-            file!(),
-            line!(),
-            column!()
         )
-    };
-}
-
-#[macro_export]
-macro_rules! info {
-    ($($arg:expr),*) => {
-        println!("kafe info: {}",  format!($($arg,)*))
-        // eprintln!(
-        //     // split so that not found when looking for the word in an editor
-        //     "info: {}\n    at {}/{}:{}:{}",
-        //     format!($($arg,)*),
-        //     $crate::SRC_PATH,
-        //     file!(),
-        //     line!(),
-        //     column!()
-        // )
-    };
-}
-
-#[macro_export]
-macro_rules! error {
-    ($($arg:expr),*) => {
-        eprintln!(
-            // split so that not found when looking for the word in an editor
-            "error: {}\n    at {}:{}:{}",
-            format!($($arg,)*),
-            file!(),
-            line!(),
-            column!()
-        )
-    };
+    }};
 }
 
 #[derive(Debug)]
@@ -95,15 +67,16 @@ pub fn resp<T: Into<Bytes>>(code: u16, chunk: T) -> Resp {
     Response::builder().status(code).body(full_body(chunk)).unwrap()
 }
 
-pub fn static_resp(code: u16, chunk: &'static str) -> Resp {
+pub fn static_resp<C: Into<StatusCode>>(code: C) -> Resp {
+    let code = code.into();
     Response::builder()
         .status(code)
-        .body(full_body(Bytes::from(chunk)))
+        .body(full_body(Bytes::from(code.to_string())))
         .unwrap()
 }
 
 pub fn resp_404() -> Resp {
-    static_resp(404, "Not found\n")
+    static_resp(StatusCode::NOT_FOUND)
 }
 
 fn empty_body() -> BoxBody {
