@@ -4,11 +4,12 @@ use std::{
 };
 
 use http::StatusCode;
-use http_body_util::{combinators, BodyExt, Empty, Full};
+use http_body_util::{BodyExt, Empty, Full, combinators};
 pub use hyper::body::Bytes;
 use hyper::{
+    Request, Response,
     body::{Body, Incoming},
-    header, Request, Response,
+    header,
 };
 pub use tracing::{error, info};
 
@@ -28,8 +29,7 @@ pub const SRC_PATH: &str = env!("CARGO_MANIFEST_DIR");
 #[macro_export]
 macro_rules! fixme {
     ($a:expr) => {{
-        extern crate std;
-        std::eprintln!(
+        eprintln!(
             // split so that not found when looking for the word in an editor
             "FIXME\
              ! at ./{}:{}:{}\n{:?}",
