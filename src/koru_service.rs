@@ -3,39 +3,38 @@ use std::{
     net::IpAddr,
     pin::pin,
     sync::{
-        atomic::{self, Ordering},
         Arc,
+        atomic::{self, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use futures_util::{future::select, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, future::select};
 use http::{
-    header::{ACCEPT_ENCODING, ACCEPT_LANGUAGE, USER_AGENT},
     HeaderName, Uri,
+    header::{ACCEPT_ENCODING, ACCEPT_LANGUAGE, USER_AGENT},
 };
 use http_body_util::{BodyExt, Empty};
 use hyper::{
+    Request, Response, Version,
     body::{Body, Bytes},
     header::HOST,
     http::HeaderValue,
-    Request, Response, Version,
 };
 use hyper_util::rt::TokioIo;
 use tokio::{
     net::TcpStream,
     process::Command,
     sync::{
-        mpsc::{self, error::TryRecvError},
         Mutex,
+        mpsc::{self, error::TryRecvError},
     },
 };
 use tokio_websockets::{ClientBuilder, Message};
 
 use crate::{
-    info,
+    Result, info,
     websockets::{self},
-    Result,
 };
 
 #[derive(Default, Debug)]
@@ -57,8 +56,18 @@ impl Service {
             let mut wait_time = 0;
             loop {
                 let now = SystemTime::now();
-                let mut child = Command::new(cmd).arg0(arg0).args(args).kill_on_drop(true).spawn()?;
-                info!("Running ({}) {}: {} {:?}", child.id().unwrap_or(0), arg0, cmd, args);
+                let mut child = Command::new(cmd)
+                    .arg0(arg0)
+                    .args(args)
+                    .kill_on_drop(true)
+                    .spawn()?;
+                info!(
+                    "Running ({}) {}: {} {:?}",
+                    child.id().unwrap_or(0),
+                    arg0,
+                    cmd,
+                    args
+                );
                 child.wait().await?;
                 info!("Finished running {arg0} ({})", child.id().unwrap_or(0));
                 if now.elapsed().unwrap_or(ZERO_DUR).as_secs() > 300 {
@@ -98,14 +107,20 @@ fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr, prefix: Option<&s
     Ok(())
 }
 
-pub fn websocket(mut req: crate::Req, from_addr: &IpAddr, to_authority: &str) -> Result<Response<Empty<Bytes>>> {
+pub fn websocket(
+    mut req: crate::Req,
+    from_addr: &IpAddr,
+    to_authority: &str,
+) -> Result<Response<Empty<Bytes>>> {
     let response = websockets::upgrade_response(&req)?;
     const X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
     let prefix = format!("ws://{to_authority}");
     let to_authority = to_authority.to_owned();
 
-    let mut wss = ClientBuilder::from_uri(convert_uri(req.uri(), &prefix).parse()?)
-        .add_header(X_REAL_IP, HeaderValue::from_str(from_addr.to_string().as_str())?)?;
+    let mut wss = ClientBuilder::from_uri(convert_uri(req.uri(), &prefix).parse()?).add_header(
+        X_REAL_IP,
+        HeaderValue::from_str(from_addr.to_string().as_str())?,
+    )?;
 
     for header in [ACCEPT_ENCODING, ACCEPT_LANGUAGE, USER_AGENT] {
         if let Some(value) = req.headers().get(&header) {
@@ -142,7 +157,7 @@ pub fn websocket(mut req: crate::Req, from_addr: &IpAddr, to_authority: &str) ->
         };
         let (mut wss_s, mut wss_r) = wss.split();
 
-        let (wsc_tx, mut wsc_rx) = mpsc::channel(2);
+        let (wsc_tx, mut wsc_rx) = mpsc::channel(32);
         let wsc_tx2 = wsc_tx.clone();
 
         let alive1 = Arc::new(atomic::AtomicBool::new(true));
@@ -175,12 +190,18 @@ pub fn websocket(mut req: crate::Req, from_addr: &IpAddr, to_authority: &str) ->
         let from_client = pin!(async move {
             while let Some(msg) = wsc_r.next().await {
                 match msg {
-                    Ok(msg) if msg.is_text() && msg.as_payload().len() == 1 && msg.as_payload()[0] == b'H' => {
+                    Ok(msg)
+                        if msg.is_text()
+                            && msg.as_payload().len() == 1
+                            && msg.as_payload()[0] == b'H' =>
+                    {
                         alive2.store(true, Ordering::Relaxed);
                         let now = SystemTime::now();
                         let msg = Message::text(format!(
                             "K{}",
-                            now.duration_since(UNIX_EPOCH).expect("UNIX_EPOCH").as_millis()
+                            now.duration_since(UNIX_EPOCH)
+                                .expect("UNIX_EPOCH")
+                                .as_millis()
                         ));
                         if wsc_tx2.send(msg).await.is_err() {
                             break;
@@ -248,5 +269,8 @@ pub async fn pass(mut req: crate::Req, ip_addr: IpAddr, to_authority: &str) -> c
     let web_res = sender.send_request(req).await?;
 
     let (parts, body) = web_res.into_parts();
-    Ok(Response::from_parts(parts, body.map_err(|err| err.into()).boxed()))
+    Ok(Response::from_parts(
+        parts,
+        body.map_err(|err| err.into()).boxed(),
+    ))
 }

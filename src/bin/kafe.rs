@@ -1,12 +1,18 @@
 use argh::FromArgs;
 use koru_kafe::{
-    conf::{self, ConfSig},
     Result,
+    conf::{self, ConfSig, LocationBuilders},
 };
-use std::path::Path;
+use koru_kafe::{
+    conf::{DbBuilder, TsNodeBuilder},
+    node::Task,
+    startup::StartupDb,
+};
+use std::{path::Path, sync::Arc};
 use tokio::{
-    signal::unix::{signal, SignalKind},
+    signal::unix::{Signal, SignalKind, signal},
     sync::mpsc,
+    task::JoinSet,
 };
 
 #[derive(Debug, FromArgs)]
@@ -51,33 +57,42 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    let cdir = opts.config.unwrap();
-    let cdir = Path::new(&cdir);
+    tracing_subscriber::fmt::init();
 
-    let (tx, rx) = mpsc::channel(1);
-    let tx2 = tx.clone();
-    let finished = conf::load_and_monitor(cdir, rx).await?;
+    conf::ConfBuilders::add("db", Arc::new(DbBuilder));
 
-    let mut sig_reload = signal(SignalKind::hangup())?;
+    LocationBuilders::add("koru_node", Arc::new(TsNodeBuilder));
+    conf::ConfBuilders::add("koru_node", Arc::new(TsNodeBuilder));
 
-    tokio::spawn(async move {
-        while sig_reload.recv().await.is_some() {
-            if tx.send(ConfSig::Term).await.is_err() {
-                break;
-            }
+    Task::default()
+        .with(async move {
+            let cdir = opts.config.unwrap();
+            let cdir = Path::new(&cdir);
+
+            let (tx, rx) = mpsc::channel(1);
+            let finished = conf::load_and_monitor(cdir, rx).await?;
+
+            let mut js = JoinSet::new();
+
+            StartupDb::start(&mut js);
+
+            js.spawn(on_sig_term(signal(SignalKind::hangup())?, tx.clone()));
+            js.spawn(on_sig_term(signal(SignalKind::terminate())?, tx));
+
+            finished.await?;
+
+            koru_kafe::info!("Shutdown");
+            js.shutdown().await;
+
+            Ok(())
+        })
+        .await
+}
+
+async fn on_sig_term(mut sig: Signal, tx: mpsc::Sender<ConfSig>) {
+    while sig.recv().await.is_some() {
+        if tx.send(ConfSig::Term).await.is_err() {
+            break;
         }
-    });
-
-    let mut sig_term = signal(SignalKind::terminate())?;
-    tokio::spawn(async move {
-        while sig_term.recv().await.is_some() {
-            if tx2.send(ConfSig::Term).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    finished.await?;
-
-    Ok(())
+    }
 }

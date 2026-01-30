@@ -11,7 +11,7 @@ use std::{io, sync::Mutex};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio_rustls::{rustls, LazyConfigAcceptor};
+use tokio_rustls::{LazyConfigAcceptor, rustls};
 
 async fn handler(req: crate::Req, ip_addr: IpAddr, domains: Arc<Mutex<DomainMap>>) -> crate::ResultResp {
     let host = req.uri().host().or_else(|| crate::host_from_req(&req));

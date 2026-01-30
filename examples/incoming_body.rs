@@ -1,13 +1,14 @@
 use http_body_util::{BodyExt, Empty};
 use hyper::server::conn::http1;
+use hyper::{Request, Result};
 use hyper::{
     body::{Bytes, Incoming},
     service::service_fn,
 };
-use hyper::{Request, Result};
 use hyper_util::rt::{TokioIo, TokioTimer};
-use koru_kafe::{resp, ResultResp};
 use tokio::io::DuplexStream;
+
+use koru_kafe::{ResultResp, resp};
 
 // An async function that consumes a request, does nothing with it and returns a
 // response.

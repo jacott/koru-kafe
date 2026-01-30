@@ -1,13 +1,21 @@
-use crate::{resp, ResultResp};
+use bytes::Buf;
 use http_body_util::Empty;
 use hyper::server::conn::http1;
+use hyper::{Request, Result};
 use hyper::{
     body::{Bytes, Incoming},
     service::service_fn,
 };
-use hyper::{Request, Result};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::io::DuplexStream;
+use tokio::sync::mpsc;
+
+use crate::{
+    Jst,
+    message::{Encoder, GlobalDictEncoder},
+    node::{KoruNode, upstream_link::Frame},
+};
+use crate::{ResultResp, node, resp};
 
 // An async function that consumes a request, does nothing with it and returns a
 // response.
@@ -23,7 +31,9 @@ async fn fetch_incoming(stream: DuplexStream) -> Result<Incoming> {
         let _ = conn.await;
     });
 
-    let req = Request::get("http://x").body(Empty::<Bytes>::new()).unwrap();
+    let req = Request::get("http://x")
+        .body(Empty::<Bytes>::new())
+        .unwrap();
 
     let res = sender.send_request(req).await?;
 
@@ -47,4 +57,28 @@ pub async fn build_incoming_body(msg: Bytes) -> Result<Incoming> {
     });
 
     fetch_incoming(client).await
+}
+
+pub(crate) fn set_init_msg(koru_node: &KoruNode) -> mpsc::Receiver<Frame> {
+    let (upstream_tx, upstream_rx) = mpsc::channel(1);
+    let gde = GlobalDictEncoder::default();
+
+    let mut enc = Encoder::message(b'X', &gde);
+    enc.add(&Jst::string("dev"));
+    enc.add(&Jst::string("hash"));
+    enc.add(&Jst::bin(&b"hello\xff\0"[..]));
+    enc.add(&Jst::string("dicthash"));
+    let mut msg = enc.encode();
+    let msg = msg.copy_to_bytes(msg.remaining());
+
+    koru_node.set_init_msg(msg, upstream_tx);
+
+    upstream_rx
+}
+
+pub(crate) fn init_node() -> (KoruNode, mpsc::Receiver<Frame>) {
+    let koru_node = node::KoruNode::new("test/uds".to_owned());
+    let njs_rx = crate::test_util::set_init_msg(&koru_node);
+    node::Task::global().add_ts_node(koru_node.clone());
+    (koru_node, njs_rx)
 }

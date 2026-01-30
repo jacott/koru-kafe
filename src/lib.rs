@@ -11,14 +11,24 @@ use hyper::{
     body::{Body, Incoming},
     header,
 };
+pub use message::jst::Jst;
 pub use tracing::{error, info};
 
 pub mod conf;
+pub mod crypto;
+pub mod db;
 pub mod domain;
+pub mod id;
 pub mod koru_service;
 pub mod listener;
 pub mod location_path;
+pub mod message;
+pub mod node;
+pub mod startup;
 pub mod static_files;
+pub mod ts_net;
+pub mod util;
+pub mod uuidv7;
 pub mod websockets;
 
 #[cfg(test)]
@@ -61,10 +71,15 @@ pub type Resp = Response<BoxBody>;
 pub type ResultResp = Result<Resp>;
 
 pub fn full_body<T: Into<Bytes>>(chunk: T) -> BoxBody {
-    Full::new(chunk.into()).map_err(|never| match never {}).boxed()
+    Full::new(chunk.into())
+        .map_err(|never| match never {})
+        .boxed()
 }
 pub fn resp<T: Into<Bytes>>(code: u16, chunk: T) -> Resp {
-    Response::builder().status(code).body(full_body(chunk)).unwrap()
+    Response::builder()
+        .status(code)
+        .body(full_body(chunk))
+        .unwrap()
 }
 
 pub fn static_resp<C: Into<StatusCode>>(code: C) -> Resp {
@@ -110,3 +125,16 @@ pub fn host_from_req(req: &Request<impl Body>) -> Option<&str> {
     }
     None
 }
+
+#[allow(dead_code)]
+fn to_hex_string(data: impl IntoIterator<Item = u8>) -> String {
+    let mut s: String = data
+        .into_iter()
+        .map(|byte| format!("{:02x} ", byte))
+        .collect();
+    s.pop();
+    s
+}
+
+#[cfg(test)]
+pub(crate) mod test_helper;

@@ -2,11 +2,14 @@ use crate::{
     domain::{self, Domain, DomainMap, DynLocation, Redirect},
     error, koru_service, listener,
     location_path::expand_path,
+    node::{self, client_link},
+    startup::StartupDb,
     static_files,
 };
 use directories::ProjectDirs;
 use hyper::StatusCode;
 use lazy_static::lazy_static;
+use linked_hash_map::LinkedHashMap;
 use mime_guess::Mime;
 use serde_derive::{Deserialize, Serialize};
 use std::{
@@ -26,7 +29,7 @@ use tokio_rustls::rustls::{
     self,
     pki_types::{CertificateDer, PrivateKeyDer},
 };
-pub use yaml_rust::{yaml, Yaml, YamlLoader};
+pub use yaml_rust::{Yaml, YamlLoader, yaml};
 
 pub type ListernerMap = HashMap<String, DomainMap>;
 
@@ -58,7 +61,11 @@ impl Error for ConfError {}
 
 impl fmt::Display for ConfError {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "{} at filed {} file {}", self.info, self.field, self.file)
+        write!(
+            formatter,
+            "{} at filed {} file {}",
+            self.info, self.field, self.file
+        )
     }
 }
 
@@ -84,7 +91,9 @@ struct RewriteBuilder;
 impl LocationBuilder for RewriteBuilder {
     fn yaml_to_location(&self, _domain: &Domain, yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
         match yaml.as_str() {
-            Some(s) => Ok(Arc::new(domain::Rewrite { path: s.to_string() })),
+            Some(s) => Ok(Arc::new(domain::Rewrite {
+                path: s.to_string(),
+            })),
             None => Err("Invalid rewrite rule; expected string".to_string()),
         }
     }
@@ -144,9 +153,11 @@ impl LocationBuilder for FileBuilder {
                     None => mime::TEXT_PLAIN,
                 };
                 let opts = static_files::Opts {
-                    root: yaml_get_opt_string(h, "root")?.unwrap_or_else(|| domain.root().to_owned()),
+                    root: yaml_get_opt_string(h, "root")?
+                        .unwrap_or_else(|| domain.root().to_owned()),
                     default_mime,
-                    cache_control: yaml_get_opt_string(h, "cache_control")?.unwrap_or_else(|| "no-cache".to_string()),
+                    cache_control: yaml_get_opt_string(h, "cache_control")?
+                        .unwrap_or_else(|| "no-cache".to_string()),
                 };
                 Ok(Arc::new(domain::File { opts }))
             }
@@ -220,7 +231,12 @@ impl ConfBuilders {
     }
 
     pub fn get(name: &str) -> Option<Arc<DynConfBuilder>> {
-        CONF_BUILDERS.map.read().expect("lock read to work").get(name).cloned()
+        CONF_BUILDERS
+            .map
+            .read()
+            .expect("lock read to work")
+            .get(name)
+            .cloned()
     }
 }
 
@@ -231,8 +247,13 @@ lazy_static! {
         m.insert("redirect".to_string(), Arc::new(RedirectBuilder));
         m.insert("file".to_string(), Arc::new(FileBuilder));
         m.insert("http_proxy".to_string(), Arc::new(HttpProxyBuilder));
-        m.insert("websocket_proxy".to_string(), Arc::new(WebsocketProxyBuilder));
-        LocationBuilders { map: RwLock::new(m) }
+        m.insert(
+            "websocket_proxy".to_string(),
+            Arc::new(WebsocketProxyBuilder),
+        );
+        LocationBuilders {
+            map: RwLock::new(m),
+        }
     };
     static ref CONF_BUILDERS: ConfBuilders = {
         ConfBuilders {
@@ -276,10 +297,15 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
 
         let mut domain = Domain::builder();
 
-        domain.root(opt_field("root")?).cert_path(opt_field("cert_path")?);
+        domain
+            .root(opt_field("root")?)
+            .cert_path(opt_field("cert_path")?);
 
         let field = &"name";
-        if let Some(name) = map.get(&Yaml::String(field.to_string())).and_then(|v| v.as_str()) {
+        if let Some(name) = map
+            .get(&Yaml::String(field.to_string()))
+            .and_then(|v| v.as_str())
+        {
             domain.name(name.to_string());
         } else {
             let mut name = path
@@ -366,7 +392,8 @@ fn load_service(path: &Path, k: &str, v: &Yaml) -> Result<koru_service::Service,
                         && v.len() > 1
                     {
                         let mut iter = v.drain(..);
-                        service.cmd = Some((iter.next().unwrap(), iter.next().unwrap(), iter.collect()));
+                        service.cmd =
+                            Some((iter.next().unwrap(), iter.next().unwrap(), iter.collect()));
                         continue;
                     }
                 }
@@ -428,7 +455,12 @@ pub fn to_env_string(v: &str) -> String {
     result
 }
 
-fn load_location(domain: &Domain, path: &Path, k: &str, v: &Yaml) -> Result<Arc<DynLocation>, ConfError> {
+fn load_location(
+    domain: &Domain,
+    path: &Path,
+    k: &str,
+    v: &Yaml,
+) -> Result<Arc<DynLocation>, ConfError> {
     if let Some(v) = v.as_hash() {
         let mut iter = v.iter();
         if let Some(t) = iter.next()
@@ -447,7 +479,11 @@ fn load_location(domain: &Domain, path: &Path, k: &str, v: &Yaml) -> Result<Arc<
 
 pub fn default_cfg() -> Result<PathBuf, ConfError> {
     match ProjectDirs::from("", "", "koru-kafe") {
-        None => Err(ConfError::new(&PathBuf::new(), "???", "Can't find config dir")),
+        None => Err(ConfError::new(
+            &PathBuf::new(),
+            "???",
+            "Can't find config dir",
+        )),
         Some(pdir) => Ok(pdir.config_dir().to_owned()),
     }
 }
@@ -504,7 +540,10 @@ pub async fn load_and_monitor(
     Ok(finished_rx)
 }
 
-pub fn load_from(cdir: &Path, _modified_since: SystemTime) -> Result<(ListernerMap, domain::ServiceMap), ConfError> {
+pub fn load_from(
+    cdir: &Path,
+    _modified_since: SystemTime,
+) -> Result<(ListernerMap, domain::ServiceMap), ConfError> {
     let mut listener_map: HashMap<String, DomainMap> = HashMap::new();
     let mut service_map = HashMap::new();
     let mut tls_config_map: HashMap<String, Arc<rustls::ServerConfig>> = HashMap::new();
@@ -512,11 +551,7 @@ pub fn load_from(cdir: &Path, _modified_since: SystemTime) -> Result<(ListernerM
     for entry in convert_err(cdir, fs::read_dir(cdir))?.filter_map(|entry| {
         entry.ok().and_then(|e| {
             e.path().file_name()?.to_str().and_then(|n| {
-                if n.ends_with(".yml") && n != "default-config.yml" {
-                    Some(e)
-                } else {
-                    None
-                }
+                if n.ends_with(".yml") && n != "default-config.yml" { Some(e) } else { None }
             })
         })
     }) {
@@ -532,7 +567,8 @@ pub fn load_from(cdir: &Path, _modified_since: SystemTime) -> Result<(ListernerM
             } else {
                 tls_config_map.insert(
                     domain.cert_path().to_owned(),
-                    set_cert(&mut domain).map_err(|msg| ConfError::new(&entry.path(), "cert_path", &msg))?,
+                    set_cert(&mut domain)
+                        .map_err(|msg| ConfError::new(&entry.path(), "cert_path", &msg))?,
                 );
             }
         }
@@ -567,7 +603,8 @@ fn set_cert(domain: &mut Domain) -> Result<Arc<rustls::ServerConfig>, String> {
     cert_path.push("fullchain.pem");
     priv_key_path.push("privkey.pem");
     let cert = load_certs(&cert_path).map_err(|e| format!("bad cert {cert_path:?}: {e}"))?;
-    let priv_key = load_key(&priv_key_path).map_err(|e| format!("bad privkey {priv_key_path:?}: {e}"))?;
+    let priv_key =
+        load_key(&priv_key_path).map_err(|e| format!("bad privkey {priv_key_path:?}: {e}"))?;
 
     match rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -680,6 +717,61 @@ async fn load_and_start(
     Ok(())
 }
 
+pub struct DbBuilder;
+impl ConfBuilder for DbBuilder {
+    fn load_yaml(
+        &self,
+        _domain: &crate::domain::Domain,
+        yaml: &Yaml,
+    ) -> std::result::Result<(), String> {
+        if let Yaml::String(url) = yaml {
+            node::Task::set_db_url(&to_env_string(url)).map_err(|e| e.to_string())
+        } else {
+            Err(format!("Invalid db url {:?}", yaml))
+        }
+    }
+}
+
+pub struct TsNodeBuilder;
+impl ConfBuilder for TsNodeBuilder {
+    fn load_yaml(
+        &self,
+        _domain: &crate::domain::Domain,
+        yaml: &Yaml,
+    ) -> std::result::Result<(), String> {
+        if let Yaml::Hash(map) = yaml {
+            let nodejs_uds = get_string(map, "nodejs_uds")?;
+            let koru_node = node::KoruNode::new(nodejs_uds);
+
+            node::Task::global().add_ts_node(koru_node.clone());
+
+            StartupDb::add(Arc::new(koru_node.clone()));
+
+        //             domain.add_conf("koru_node", Arc::new(koru_node)); // fixme! do I need to do this?
+        } else {
+            return Err(format!("Invalid db url {:?}", yaml));
+        }
+
+        Ok(())
+    }
+}
+impl LocationBuilder for TsNodeBuilder {
+    fn yaml_to_location(&self, _domain: &Domain, _yaml: &Yaml) -> Result<Arc<DynLocation>, String> {
+        Ok(Arc::new(client_link::Connection::new()))
+    }
+}
+
+fn get_string(map: &LinkedHashMap<Yaml, Yaml>, field: &str) -> Result<String, String> {
+    let v = map
+        .get(&Yaml::String(field.to_string()))
+        .ok_or_else(|| format!("Missing {} field", field))?;
+
+    match v {
+        Yaml::String(v) => Ok(to_env_string(v)),
+        _ => Err(format!("Wrong type {:?}", v)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // use super::*;
@@ -715,7 +807,11 @@ mod tests {
         let service = d.get_service("app").unwrap();
         assert_eq!(
             service.cmd,
-            Some((s("my-test-cmd"), s("../cmd-name"), vec![s("arg1"), s("arg2")]))
+            Some((
+                s("my-test-cmd"),
+                s("../cmd-name"),
+                vec![s("arg1"), s("arg2")]
+            ))
         );
         assert_eq!(service.server_socket, "localhost:3000");
 
@@ -729,14 +825,21 @@ mod tests {
 
     #[test]
     fn to_arg_list() -> crate::Result<()> {
-        let yaml = yaml_rust::YamlLoader::load_from_str(r#"[1, 2, "th$r}ee", "f{ou}r${PWD}f$ve${HOME}", "${HOME}"] "#)?;
+        let yaml = yaml_rust::YamlLoader::load_from_str(
+            r#"[1, 2, "th$r}ee", "f{ou}r${PWD}f$ve${HOME}", "${HOME}"] "#,
+        )?;
         let yaml = yaml[0].as_vec().unwrap();
 
         let exp = vec![
             "1".to_string(),
             "2".to_string(),
             "th$r}ee".to_string(),
-            format!("f{2}r{0}f$ve{1}", std::env::var("PWD")?, std::env::var("HOME")?, "{ou}"),
+            format!(
+                "f{2}r{0}f$ve{1}",
+                std::env::var("PWD")?,
+                std::env::var("HOME")?,
+                "{ou}"
+            ),
             std::env::var("HOME")?,
         ];
 
