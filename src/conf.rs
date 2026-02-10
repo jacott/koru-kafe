@@ -318,7 +318,7 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
                 if v.as_hash().is_none() {
                     return Err(cerr(field, &format!("Invalid services value {v:?}")));
                 }
-                domain.add_service(k.to_string(), Arc::new(load_services(path, k, v)?));
+                domain.add_service(k.to_string(), Arc::new(load_service(path, k, v)?));
             }
         }
 
@@ -349,7 +349,7 @@ fn load_domain(path: &Path) -> Result<(Vec<String>, Domain), ConfError> {
     }
 }
 
-fn load_services(path: &Path, k: &str, v: &Yaml) -> Result<koru_service::Service, ConfError> {
+fn load_service(path: &Path, k: &str, v: &Yaml) -> Result<koru_service::Service, ConfError> {
     let mut service: koru_service::Service = Default::default();
     if let Some(v) = v.as_hash() {
         for (sk, sv) in v {
