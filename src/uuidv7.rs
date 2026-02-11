@@ -41,7 +41,7 @@ impl Uuidv7 {
 
     pub fn random() -> Self {
         let mut rng = rng();
-        Self::time_and_rand(SystemTime::now(), rng.random::<u64>())
+        Self::time_and_rand(SystemTime::now(), rng.next_u64())
     }
 
     pub fn as_u128(&self) -> u128 {

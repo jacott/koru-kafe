@@ -1,6 +1,6 @@
 [package]
 name = "koru-kafe"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 publish = false
 
@@ -16,7 +16,7 @@ directories = "^6"
 yaml-rust = "^0.4"
 serde = "^1"
 serde_derive = "^1"
-radix_trie = "^0.2"
+radix_trie = "^0.3"
 lazy_static = "^1"
 async-trait = "^0.1"
 tokio-rustls = "^0.26"
@@ -25,7 +25,7 @@ env_logger = "^0.11"
 log = "^0.4"
 httpdate = "^1"
 mime = "^0.3"
-tokio-websockets = { version = "^0.12", features = ["client", "server", "ring", "rand"] }
+tokio-websockets = { version = "^0.13", features = ["client", "server", "ring", "rand"] }
 futures-util = { version = "^0.3", features = ["sink"] }
 http = "^1"
 sha1 = "^0.10"
@@ -43,7 +43,7 @@ radixdb = "^0.2"
 linked-hash-map = "^0.5"
 serde_json = { version = "^1", features = ["preserve_order"] }
 tracing-subscriber = "^0.3"
-rand = "^0.9"
+rand = "^0.10"
 
 [dev-dependencies]
 tokio-test = "^0.4"
