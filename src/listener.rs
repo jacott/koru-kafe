@@ -4,10 +4,11 @@ use crate::{
 };
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use std::net::IpAddr;
+use socket2::{Socket, TcpKeepalive};
 use std::ops::DerefMut;
 use std::sync::Arc;
 use std::{io, sync::Mutex};
+use std::{net::IpAddr, time::Duration};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -68,7 +69,18 @@ pub async fn listen(
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;
-        stream.set_nodelay(true)?;
+        let std_stream = stream.into_std()?; // Convert to std to use socket2
+        std_stream.set_nodelay(true)?;
+        let socket = Socket::from(std_stream);
+
+        let keepalive = TcpKeepalive::new()
+            .with_time(Duration::from_secs(60)) // Start probing after 60s idle
+            .with_interval(Duration::from_secs(10)); // Probe every 10s after that
+
+        socket.set_tcp_keepalive(&keepalive)?;
+
+        // Convert back to Tokio
+        let stream = tokio::net::TcpStream::from_std(socket.into())?;
         let ip_addr = peer_addr.ip();
         if is_tls {
             let domains = domains.clone();
