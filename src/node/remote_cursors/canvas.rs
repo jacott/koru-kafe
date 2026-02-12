@@ -163,8 +163,8 @@ impl CanvasInner {
         let when = Instant::now() + delay;
         if let Some(timer) = &mut self.timer {
             if timer.when > when {
+                // fixme! nees to test this
                 timer.when = when;
-                info!("fixme! repurpose wake_after {when:?}");
                 timer.task = canvas.clone().wake_after(when);
             }
         } else {
@@ -240,7 +240,7 @@ impl CanvasInner {
                 }),
             ));
 
-            self.add_clients.clear(); // fixme! test this
+            self.add_clients.clear();
         }
 
         info!(
@@ -346,7 +346,6 @@ impl Canvas {
             (guard.canvas_id, guard.extract_assignment_messages())
         };
         if let Some((clients, messages, per_client, all_clients)) = assignments {
-            // fixme! need to test slot assingments too and send those to new clients.
             if !all_clients.is_empty() {
                 for (client, canvas_slot) in per_client {
                     client.set_canvas_slot(canvas_slot);

@@ -6,14 +6,18 @@ use std::{
         Arc,
         atomic::{self, Ordering},
     },
+    task::Poll,
 };
 
 use async_trait::async_trait;
-use futures_util::{Sink, SinkExt, Stream, StreamExt, future::select};
+use futures_util::{
+    Sink, SinkExt, Stream, StreamExt,
+    future::{self},
+};
 use http::StatusCode;
 use http_body_util::BodyExt;
 use hyper::Response;
-use tokio::sync::mpsc::{self, error::TryRecvError};
+use tokio::sync::mpsc::{self};
 
 use crate::{
     Req, ResultResp,
@@ -22,7 +26,7 @@ use crate::{
     node::{
         ClientConnectMessage,
         client_session::{ClientSession, SESSION_TIMEOUT},
-        remote_cursors::canvas::Canvas,
+        remote_cursors::{canvas::Canvas, message},
         upstream_link::{Frame, Msg},
     },
     static_resp,
@@ -60,12 +64,12 @@ async fn handle_client(
     task.with(async move {
         let sess = ClientSession::new(slot, ws_tx.clone(), upstream_tx);
 
-        let to_client = send_to_client(ws_s, ws_rx);
-        let from_client = receive_from_client(&sess, ws_r, alive.clone());
+        let mut to_client = pin!(send_to_client(ws_s, ws_rx));
+        let mut from_client = pin!(receive_from_client(&sess, ws_r, alive.clone()));
 
-        let from_upstream = receive_from_upstream(sess.clone(), upstream_rx);
+        let mut from_upstream = pin!(receive_from_upstream(sess.clone(), upstream_rx));
 
-        let timeout = async move {
+        let mut timeout = pin!(async move {
             loop {
                 tokio::time::sleep(SESSION_TIMEOUT).await;
                 if !alive.load(Ordering::Relaxed) {
@@ -74,12 +78,23 @@ async fn handle_client(
 
                 alive.store(false, Ordering::Relaxed);
             }
-        };
+        });
 
-        let _ = select(
-            select(pin!(to_client), pin!(from_upstream)),
-            select(pin!(from_client), pin!(timeout)),
-        )
+        future::poll_fn(|cx| {
+            if let Poll::Ready(val) = to_client.as_mut().poll(cx) {
+                return Poll::Ready(val);
+            }
+            if let Poll::Ready(val) = from_upstream.as_mut().poll(cx) {
+                return Poll::Ready(val);
+            }
+            if let Poll::Ready(val) = from_client.as_mut().poll(cx) {
+                return Poll::Ready(val);
+            }
+            if let Poll::Ready(val) = timeout.as_mut().poll(cx) {
+                return Poll::Ready(val);
+            }
+            Poll::Pending
+        })
         .await;
 
         Canvas::remove_client(&sess);
@@ -111,8 +126,7 @@ async fn receive_from_client<S, E>(
     client_sess: &ClientSession,
     mut ws_r: S,
     alive: Arc<atomic::AtomicBool>,
-) -> crate::Result<()>
-where
+) where
     // S must be a Stream that yields a Result containing a WebSocket Message
     S: Stream<Item = Result<Message, E>> + Unpin,
     // E can be any type, as your code simply discards errors with Err(_) => break
@@ -121,14 +135,15 @@ where
         match msg {
             Ok(msg) => {
                 alive.store(true, Ordering::Relaxed);
-                client_sess.route_client_message(msg).await?;
+                if client_sess.route_client_message(msg).await.is_err() {
+                    break;
+                }
             }
             Err(_) => {
                 break;
             }
         }
     }
-    Ok(())
 }
 
 async fn send_to_client<S>(mut ws_s: S, mut ws_rx: mpsc::Receiver<Message>)
@@ -136,24 +151,46 @@ where
     // S must accept Messages, and must be Unpin to use SinkExt methods safely
     S: Sink<Message> + Unpin,
 {
-    'outer: while let Some(msg) = ws_rx.recv().await {
-        if ws_s.feed(msg).await.is_err() {
-            break;
-        }
+    async fn get_next(
+        ws_rx: &mut mpsc::Receiver<Message>,
+        mut msg: Message,
+    ) -> (Message, Option<Message>) {
         loop {
-            match ws_rx.try_recv() {
-                Ok(msg) => {
-                    if ws_s.feed(msg).await.is_err() {
-                        break 'outer;
-                    }
+            if let Ok(msg2) = ws_rx.try_recv() {
+                if is_important(&msg2) {
+                    return (msg, Some(msg2));
                 }
-                Err(TryRecvError::Empty) => {
-                    if ws_s.flush().await.is_err() {
-                        break 'outer;
-                    }
-                    break;
-                }
-                Err(TryRecvError::Disconnected) => break 'outer,
+                msg = msg2;
+            } else {
+                return (msg, None);
+            }
+        }
+    }
+
+    fn is_important(msg: &Message) -> bool {
+        if let Some(header) = msg.as_payload().get(0..2)
+            && header == [message::CURSOR_CMD, message::MOVE]
+        {
+            false
+        } else {
+            true
+        }
+    }
+
+    while let Some(msg) = ws_rx.recv().await {
+        if is_important(&msg) {
+            if ws_s.send(msg).await.is_err() {
+                break;
+            }
+        } else {
+            let (msg, opt_msg) = get_next(&mut ws_rx, msg).await;
+            if ws_s.send(msg).await.is_err() {
+                break;
+            }
+            if let Some(msg) = opt_msg
+                && ws_s.send(msg).await.is_err()
+            {
+                break;
             }
         }
     }

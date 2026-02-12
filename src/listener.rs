@@ -13,7 +13,11 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_rustls::{LazyConfigAcceptor, rustls};
 
-async fn handler(req: crate::Req, ip_addr: IpAddr, domains: Arc<Mutex<DomainMap>>) -> crate::ResultResp {
+async fn handler(
+    req: crate::Req,
+    ip_addr: IpAddr,
+    domains: Arc<Mutex<DomainMap>>,
+) -> crate::ResultResp {
     let host = req.uri().host().or_else(|| crate::host_from_req(&req));
     if let Some(domain) = with_domain(host, &domains) {
         match domain.find_location(req.uri().path()) {
@@ -64,6 +68,7 @@ pub async fn listen(
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;
+        stream.set_nodelay(true)?;
         let ip_addr = peer_addr.ip();
         if is_tls {
             let domains = domains.clone();
@@ -86,12 +91,16 @@ pub async fn listen(
                                 Ok(stream) => {
                                     handle_hyper_result(
                                         ip_addr,
-                                        hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
-                                            .serve_connection_with_upgrades(
-                                                TokioIo::new(stream),
-                                                service_fn(move |req| handler(req, ip_addr, domains.clone())),
-                                            )
-                                            .await,
+                                        hyper_util::server::conn::auto::Builder::new(
+                                            TokioExecutor::new(),
+                                        )
+                                        .serve_connection_with_upgrades(
+                                            TokioIo::new(stream),
+                                            service_fn(move |req| {
+                                                handler(req, ip_addr, domains.clone())
+                                            }),
+                                        )
+                                        .await,
                                     );
                                 }
                                 Err(err) => {
@@ -128,7 +137,11 @@ fn handle_hyper_result(peer_addr: IpAddr, res: crate::Result<()>) {
     }
 }
 
-async fn handle_error(err: io::Error, peer_addr: IpAddr, acceptor: &mut LazyConfigAcceptor<TcpStream>) {
+async fn handle_error(
+    err: io::Error,
+    peer_addr: IpAddr,
+    acceptor: &mut LazyConfigAcceptor<TcpStream>,
+) {
     info!("{peer_addr:?} - 400 Bad Request: {}", &err);
     if let Some(mut stream) = acceptor.take_io() {
         let _ = stream
@@ -160,7 +173,10 @@ mod tests {
 
         {
             let mut guard = dm.lock().unwrap();
-            guard.insert("foo".to_string(), Domain::builder().name("foo".to_string()).build());
+            guard.insert(
+                "foo".to_string(),
+                Domain::builder().name("foo".to_string()).build(),
+            );
         }
         let ans = super::with_domain(Some("foo"), &dm);
         assert!(ans.is_some());

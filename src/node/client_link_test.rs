@@ -66,9 +66,7 @@ async fn test_heartbeat() {
 
             // 3. Run the handler
             // Note: This finishes because mock_stream eventually returns None
-            receive_from_client(&client_sess, mock_stream, alive.clone())
-                .await
-                .unwrap();
+            receive_from_client(&client_sess, mock_stream, alive.clone()).await;
 
             // 4. Assertions for Heartbeat ('H' -> 'K')
             assert!(
