@@ -54,3 +54,18 @@ async fn remote_cursors_new_client() {
     })
     .await;
 }
+
+#[test]
+fn send_binary_unless_half_full() {
+    let (client_sess, mut client_rx) = node::test_helper::client_session(2, "user1", "db1");
+    static MSG: &[u8] = &[1, 2, 3];
+    let data = Bytes::from_static(MSG);
+    for _ in 0..18 {
+        client_sess.send_binary_unless_half_full(&data);
+    }
+    assert_eq!(client_sess.inner.client_sink.capacity(), 16);
+    while let Ok(ans) = client_rx.try_recv() {
+        assert_eq!(&ans.as_payload()[..], MSG);
+    }
+    assert_eq!(client_sess.inner.client_sink.capacity(), 32);
+}

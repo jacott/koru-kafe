@@ -273,7 +273,7 @@ impl CanvasInner {
         let moves = std::mem::take(&mut self.moves);
         let moves = Bytes::from(moves);
         for client in &self.clients {
-            client.try_send_binary(moves.clone());
+            client.send_binary_unless_half_full(&moves);
         }
     }
 
