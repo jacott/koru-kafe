@@ -129,8 +129,8 @@ impl ClientSession {
         } else {
             let payload = msg.as_payload();
             if !payload.is_empty() {
-                if msg.as_payload()[0] == remote_cursors::message::CURSOR_CMD {
-                    CanvasDb::client_message(self, msg.into_payload().into());
+                if payload[0] == remote_cursors::message::CURSOR_CMD {
+                    CanvasDb::client_message(self, payload);
                 } else {
                     self.inner
                         .upstream_tx
@@ -166,7 +166,7 @@ impl ClientSession {
 
     pub async fn route_upstream_binary_message(&self, data: Bytes) -> crate::Result<()> {
         if !data.is_empty() && data[0] == CURSOR_CMD {
-            CanvasDb::upstream_message(self, data);
+            CanvasDb::upstream_message(self, &data);
         } else {
             self.inner
                 .client_sink

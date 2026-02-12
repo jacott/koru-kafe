@@ -112,14 +112,14 @@ async fn sending_slot_assignments() {
             // my slot
             let msg = user1_client_rx.try_recv().unwrap();
             assert!(msg.is_binary());
-            let msg: Bytes = msg.into_payload().into();
+            let msg = msg.as_payload();
             assert_eq!(msg[0], message::CURSOR_CMD);
             assert_eq!(msg[1], message::ASSIGN_SLOT);
-            assert_eq!(message::decode_canvas(msg.clone()), canvas_id);
+            assert_eq!(message::decode_canvas(msg), canvas_id);
             let u1_slot = message::decode_assigned_slot(msg);
 
             let msg = user2_client_rx.try_recv().unwrap();
-            let msg: Bytes = msg.into_payload().into();
+            let msg = msg.as_payload();
             let u2_slot = message::decode_assigned_slot(msg);
 
             assert_eq!(u2_slot + u1_slot, 1);
@@ -127,12 +127,12 @@ async fn sending_slot_assignments() {
             // new clients
             let msg = user1_client_rx.try_recv().unwrap();
             assert!(msg.is_binary());
-            let msg: Bytes = msg.into_payload().into();
+            let msg = msg.as_payload();
             assert_eq!(msg[0], message::CURSOR_CMD);
             assert_eq!(msg[1], message::NEW_CLIENTS);
-            assert_eq!(message::decode_canvas(msg.clone()), canvas_id);
+            assert_eq!(message::decode_canvas(msg), canvas_id);
 
-            let mut cids = message::decode_clients(msg.clone()).collect::<Vec<Id>>();
+            let mut cids = message::decode_clients(msg).collect::<Vec<Id>>();
             cids.sort();
             let expids = [user1.clone(), user2.clone()].map(|c| c.get_user_id());
             assert_eq!(cids, expids);
@@ -147,10 +147,10 @@ async fn sending_slot_assignments() {
 
             let msg = user1_client_rx.try_recv().unwrap();
             assert!(msg.is_binary());
-            let msg: Bytes = msg.into_payload().into();
+            let msg = msg.as_payload();
             assert_eq!(msg[0], message::CURSOR_CMD);
             assert_eq!(msg[1], message::ASSIGN_SLOT);
-            assert_eq!(message::decode_canvas(msg.clone()), canvas2_id);
+            assert_eq!(message::decode_canvas(msg), canvas2_id);
             let u1_slot = message::decode_assigned_slot(msg);
             assert_eq!(u1_slot, 0);
 
@@ -167,14 +167,11 @@ async fn sending_slot_assignments() {
             flush_timer(&canvas2).await;
             let msg = user2_client_rx.try_recv().unwrap();
             assert!(msg.is_binary());
-            let msg: Bytes = msg.into_payload().into();
+            let msg = msg.as_payload();
             assert_eq!(msg[0], message::CURSOR_CMD);
             assert_eq!(msg[1], message::REMOVED_CLIENTS);
-            assert_eq!(message::decode_canvas(msg.clone()), canvas2_id);
-            assert_eq!(
-                message::decode_removes(msg.clone()).collect::<Vec<u8>>(),
-                vec![0],
-            );
+            assert_eq!(message::decode_canvas(msg), canvas2_id);
+            assert_eq!(message::decode_removes(msg).collect::<Vec<u8>>(), vec![0],);
         }));
 
         test_helper::assert_join_set(jset, 500).await;

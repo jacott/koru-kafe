@@ -69,7 +69,7 @@ pub fn encode_removed_clients(
     msg.freeze()
 }
 
-pub fn decode_canvas(mut msg: Bytes) -> Id {
+pub fn decode_canvas(mut msg: &[u8]) -> Id {
     if msg.len() < ID_LEN + 2 {
         Id::default()
     } else {
@@ -78,21 +78,21 @@ pub fn decode_canvas(mut msg: Bytes) -> Id {
     }
 }
 
-pub fn decode_clients(mut msg: Bytes) -> impl Iterator<Item = Id> {
+pub fn decode_clients(mut msg: &[u8]) -> impl Iterator<Item = Id> {
     msg.advance(min(msg.remaining(), 2 + ID_LEN));
 
     let count = msg.remaining() / ID_LEN;
     std::iter::repeat_with(move || msg.get_u128_le().into()).take(count)
 }
 
-pub fn decode_removes(mut msg: Bytes) -> impl Iterator<Item = u8> {
+pub fn decode_removes(mut msg: &[u8]) -> impl Iterator<Item = u8> {
     msg.advance(min(msg.remaining(), 2 + ID_LEN));
 
     let count = msg.remaining();
     std::iter::repeat_with(move || msg.get_u8()).take(count)
 }
 
-pub fn decode_assigned_slot(mut msg: Bytes) -> u8 {
+pub fn decode_assigned_slot(mut msg: &[u8]) -> u8 {
     msg.advance(min(msg.remaining(), 2 + ID_LEN));
     msg.get_u8()
 }

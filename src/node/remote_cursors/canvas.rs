@@ -55,12 +55,12 @@ impl CanvasDb {
         self.0.read().expect("poisoned").get(&canvas_id).cloned()
     }
 
-    pub fn upstream_message(client: &ClientSession, data: Bytes) {
+    pub fn upstream_message(client: &ClientSession, data: &[u8]) {
         if data.len() > 2 {
             match data[1] {
                 message::NEW_CLIENTS => {
                     Canvas::remove_client(client);
-                    let canvas_id = message::decode_canvas(data.clone());
+                    let canvas_id = message::decode_canvas(data);
                     if !canvas_id.is_empty() {
                         let db = Task::cursor_db().get_canvas_db(client.get_db_id());
                         db.add_client(canvas_id, client);
@@ -78,7 +78,7 @@ impl CanvasDb {
         }
     }
 
-    pub fn client_message(client: &ClientSession, data: Bytes) {
+    pub fn client_message(client: &ClientSession, data: &[u8]) {
         if data.len() > 2 {
             match data[1] {
                 message::MOVE => {
@@ -125,7 +125,7 @@ struct CanvasInner {
     moves: Vec<u8>,
 }
 impl CanvasInner {
-    fn cursor_move(&mut self, canvas: &Canvas, slot: u8, data: Bytes) {
+    fn cursor_move(&mut self, canvas: &Canvas, slot: u8, data: &[u8]) {
         if self.moves.is_empty() {
             self.moves.push(message::CURSOR_CMD);
             self.moves.push(message::MOVE);
@@ -302,7 +302,7 @@ impl Canvas {
         }
     }
 
-    pub fn cursor_move(&self, slot: u8, data: Bytes) {
+    pub fn cursor_move(&self, slot: u8, data: &[u8]) {
         self.write().cursor_move(self, slot, data);
     }
 

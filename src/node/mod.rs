@@ -281,7 +281,7 @@ impl KoruNode {
             .remove(slot);
     }
 
-    fn auth_response(&self, slot: Slot, bytes: Bytes) -> Option<(ClientSender, ClientMessage)> {
+    fn auth_response(&self, slot: Slot, bytes: &Bytes) -> Option<(ClientSender, ClientMessage)> {
         let guard = self.inner.njs_comms.read().expect("poisoned");
         let upstream_tx = guard.upstream_tx.as_ref()?.clone();
 
@@ -390,7 +390,7 @@ async fn start_uds(koru_node: KoruNode, path: String) {
             while let Ok(Some(Frame { msg, slot })) = kreader.read_msg().await {
                 match msg {
                     Msg::Connect(bytes) => {
-                        if let Some((client, authc)) = kn3.auth_response(slot, bytes)
+                        if let Some((client, authc)) = kn3.auth_response(slot, &bytes)
                             && client.send(authc).await.is_ok()
                         {
                             continue;
