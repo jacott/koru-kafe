@@ -210,7 +210,7 @@ impl Connection {
         &self,
         req: Req,
         from_addr: IpAddr,
-        from_js: mpsc::Receiver<ClientMessage>,
+        from_upstream: mpsc::Receiver<ClientMessage>,
         authc: ClientConnect,
     ) -> ResultResp {
         let response = websockets::upgrade_response(&req)?;
@@ -218,7 +218,7 @@ impl Connection {
         tokio::task::spawn(async move {
             let slot = authc.slot;
             let upstream_tx = authc.upstream_tx.clone();
-            if let Err(err) = handle_client(req, from_js, authc).await {
+            if let Err(err) = handle_client(req, from_upstream, authc).await {
                 info!("Unexpect close -  {slot:?} {err:?}");
             } else {
                 info!("close socket - {slot:?} {from_addr:?}");

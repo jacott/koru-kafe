@@ -1,7 +1,7 @@
 use std::{
     fs, io,
     net::IpAddr,
-    sync::{Arc, RwLock, RwLockReadGuard},
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
 use async_trait::async_trait;
@@ -59,7 +59,7 @@ pub const CLIENT_QUEUE_CAPICITY: usize = 16;
 pub type ClientRegistry = SlotMap<ClientSender>;
 
 #[derive(Default)]
-struct NodeJsComms {
+struct NodeJsConn {
     upstream_tx: Option<mpsc::Sender<Frame>>,
     version: Bytes,
     version_hash: Bytes,
@@ -70,7 +70,7 @@ struct NodeJsComms {
     global_dict_encoder: Arc<GlobalDictEncoder>,
     clients: ClientRegistry,
 }
-impl NodeJsComms {
+impl NodeJsConn {
     fn init_message(&self, byte: u8) -> Bytes {
         match byte {
             VERSION_BAD_DICTIONARY => self.dict_msg.clone(),
@@ -82,13 +82,7 @@ impl NodeJsComms {
 }
 struct TsNodeInner {
     nodejs_uds: String,
-    njs_comms: RwLock<NodeJsComms>,
-}
-impl TsNodeInner {
-    #[inline(always)]
-    fn njs_comms(&self) -> RwLockReadGuard<'_, NodeJsComms> {
-        self.njs_comms.read().expect("poisoned")
-    }
+    njs_conn: RwLock<NodeJsConn>,
 }
 
 #[derive(Clone)]
@@ -164,9 +158,23 @@ impl KoruNode {
         Self {
             inner: Arc::new(TsNodeInner {
                 nodejs_uds,
-                njs_comms: RwLock::new(Default::default()),
+                njs_conn: RwLock::new(Default::default()),
             }),
         }
+    }
+
+    fn write_njs(&'_ self) -> RwLockWriteGuard<'_, NodeJsConn> {
+        self.inner.njs_conn.write().expect("poisoned")
+    }
+
+    fn read_njs(&'_ self) -> RwLockReadGuard<'_, NodeJsConn> {
+        self.inner.njs_conn.read().expect("poisoned")
+    }
+
+    pub async fn njs_lost(&self) {
+        let mut guard = self.write_njs();
+        guard.upstream_tx.take();
+        guard.clients.clear();
     }
 
     pub fn start_client_connect() -> mpsc::Sender<ClientConnectMessage> {
@@ -180,18 +188,18 @@ impl KoruNode {
     }
 
     pub fn global_dict_encoder(&self) -> Arc<GlobalDictEncoder> {
-        self.inner.njs_comms().global_dict_encoder.clone()
+        self.read_njs().global_dict_encoder.clone()
     }
 
     pub fn global_dict_decoder(&self) -> Arc<GlobalDictDecoder> {
-        self.inner.njs_comms().global_dict_decoder.clone()
+        self.read_njs().global_dict_decoder.clone()
     }
 
     fn add_client(
         &self,
         client_tx: mpsc::Sender<ClientMessage>,
     ) -> Option<(mpsc::Sender<Frame>, Slot)> {
-        let mut guard = self.inner.njs_comms.write().expect("poisoned");
+        let mut guard = self.write_njs();
         let tx = guard.upstream_tx.clone()?;
         let client_conn = ClientSender::new(client_tx);
         let slot = guard.clients.insert(client_conn)?;
@@ -252,7 +260,7 @@ impl KoruNode {
             let short_msg = encode_dict_msg(&fields[..2]);
             let dict_msg = encode_dict_msg(&fields);
 
-            let mut guard = self.inner.njs_comms.write().expect("poisoned");
+            let mut guard = self.inner.njs_conn.write().expect("poisoned");
             guard.upstream_tx = Some(upstream_tx);
             guard.version = version;
             guard.version_hash = version_hash;
@@ -269,20 +277,14 @@ impl KoruNode {
     }
 
     fn get_client(&self, slot: Slot) -> Option<ClientSender> {
-        let guard = self.inner.njs_comms.read().expect("poisoned");
-        guard.clients.get(slot).cloned()
+        self.read_njs().clients.get(slot).cloned()
     }
     fn drop_client(&self, slot: Slot) {
-        self.inner
-            .njs_comms
-            .write()
-            .expect("poisoned")
-            .clients
-            .remove(slot);
+        self.write_njs().clients.remove(slot);
     }
 
     fn auth_response(&self, slot: Slot, bytes: &Bytes) -> Option<(ClientSender, ClientMessage)> {
-        let guard = self.inner.njs_comms.read().expect("poisoned");
+        let guard = self.read_njs();
         let upstream_tx = guard.upstream_tx.as_ref()?.clone();
 
         let version_match = if bytes.len() == 1 { bytes[0] } else { 0 };
@@ -413,6 +415,8 @@ async fn start_uds(koru_node: KoruNode, path: String) {
         js.join_next().await;
 
         js.shutdown().await;
+
+        koru_node.njs_lost().await;
     }
 }
 

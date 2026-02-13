@@ -10,7 +10,7 @@ use super::*;
 
 #[test]
 fn init_message() {
-    let comms = NodeJsComms {
+    let comms = NodeJsConn {
         version: Bytes::from_static(b"v1.7.0-64-sdfdfsd"),
         version_hash: Bytes::from_static(b"123456"),
         full_msg: Bytes::from_static(b"full_msg"),
