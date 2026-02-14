@@ -53,15 +53,15 @@ fn clear() {
     assert_eq!(*map.free_ids.front().unwrap(), 3);
 
     map.clear();
-    assert_eq!(*map.free_ids.front().unwrap(), 1);
-    assert_eq!(*map.free_ids.get(1).unwrap(), 2);
-    assert_eq!(*map.free_ids.get(2).unwrap(), 3);
-    assert_eq!(*map.free_ids.back().unwrap(), 65535);
-    assert_eq!(*map.free_ids.get(65534).unwrap(), 65535);
-    assert_eq!(*map.free_ids.get(65533).unwrap(), 65534);
-    assert_eq!(*map.free_ids.get(65532).unwrap(), 65533);
-    assert_eq!(*map.free_ids.get(65531).unwrap(), 65532);
     assert_eq!(map.len(), 0);
+    assert_eq!(*map.free_ids.front().unwrap(), 3);
+    assert_eq!(*map.free_ids.get(1).unwrap(), 4);
+    assert_eq!(*map.free_ids.get(2).unwrap(), 5);
+    assert_eq!(*map.free_ids.back().unwrap(), 2);
+    assert_eq!(*map.free_ids.get(65534).unwrap(), 2);
+    assert_eq!(*map.free_ids.get(65533).unwrap(), 1);
+    assert_eq!(*map.free_ids.get(65532).unwrap(), 65535);
+    assert_eq!(*map.free_ids.get(65531).unwrap(), 65534);
 
     assert!(map.get(slot_a).is_none());
     assert!(map.get(slot_b).is_none());

@@ -80,14 +80,13 @@ impl<T> SlotMap<T> {
     }
 
     pub fn clear(&mut self) {
-        for slot in self.slots.iter_mut() {
-            slot.take();
-        }
-        for (slot, id) in self.free_ids.iter_mut().zip(1..=(CAPACITY - 1)) {
-            *slot = id as u16;
-        }
-        while self.free_ids.len() < (CAPACITY - 1) {
-            self.free_ids.push_back(self.free_ids.len() as u16 + 1);
+        for (i, slot) in self.slots.iter_mut().enumerate() {
+            if slot.take().is_some() {
+                self.free_ids.push_back(i as u16);
+                if CAPACITY - 1 == self.free_ids.len() {
+                    break;
+                }
+            }
         }
     }
 
