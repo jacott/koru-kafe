@@ -10,7 +10,7 @@ use tokio::{io::AsyncWriteExt, sync::broadcast};
 use crate::ts_net::unix;
 use crate::websockets::Message;
 
-use super::session_manager::Slot;
+use super::slot_map::Slot;
 
 pub type MpscSender = mpsc::Sender<Msg>;
 pub type MpscReceiver = mpsc::Receiver<Msg>;

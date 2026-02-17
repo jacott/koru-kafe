@@ -5,7 +5,7 @@ use pretty_assertions::assert_matches;
 use tokio::task::JoinSet;
 
 use crate::{
-    node::{Task, session_manager::Slot},
+    node::{Task, slot_map::Slot},
     test_helper,
 };
 

@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use http::StatusCode;
-use session_manager::{Slot, SlotMap};
+use slot_map::{Slot, SlotMap};
 use tokio::{
     net::UnixListener,
     sync::mpsc::{self},
@@ -25,7 +25,7 @@ pub mod client_link;
 pub mod client_session;
 pub mod model;
 pub mod remote_cursors;
-pub mod session_manager;
+pub mod slot_map;
 pub mod task;
 pub mod upstream_link;
 
@@ -440,7 +440,7 @@ pub mod test_helper {
     use crate::{id::Id, websockets::Message};
     use tokio::sync::mpsc;
 
-    use super::{client_session::ClientSession, session_manager::Slot};
+    use super::{client_session::ClientSession, slot_map::Slot};
 
     pub fn client_session<I: Into<Id>>(
         slot: u16,

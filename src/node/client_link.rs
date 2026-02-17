@@ -97,7 +97,7 @@ async fn handle_client(
         })
         .await;
 
-        Canvas::remove_client(&sess);
+        Canvas::drop_client(&sess);
     })
     .await;
 

@@ -1,7 +1,5 @@
 use std::collections::VecDeque;
 
-// fixme! rename this module to super::slot_map
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Slot(usize);
 impl Slot {
@@ -104,5 +102,5 @@ impl<T> SlotMap<T> {
 }
 
 #[cfg(test)]
-#[path = "session_manager_test.rs"]
+#[path = "slot_map_test.rs"]
 mod test;

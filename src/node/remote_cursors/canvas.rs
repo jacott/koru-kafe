@@ -1,6 +1,6 @@
 use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    collections::{HashMap, HashSet},
+    sync::{Arc, RwLock, RwLockWriteGuard},
     time::Duration,
 };
 
@@ -10,7 +10,7 @@ use tokio::time::Instant;
 
 use crate::{
     id::Id,
-    node::{Task, client_session::ClientSession, remote_cursors::message, session_manager::Slot},
+    node::{Task, client_session::ClientSession, remote_cursors::message, slot_map::Slot},
     util::partition_list,
 };
 
@@ -34,8 +34,17 @@ impl Default for CanvasInfo {
 pub struct CanvasDb(Arc<RwLock<HashMap<Id, Canvas>>>);
 impl CanvasDb {
     pub fn add_client(&self, canvas_id: Id, client: &ClientSession) {
-        let canvas = self.get_create(canvas_id);
-        canvas.add_client(client);
+        let info = client.get_canvas_info();
+        if let Some(ref canvas) = info.canvas {
+            if canvas.get_canvas_id() == canvas_id {
+                return;
+            }
+            canvas.write().remove(canvas, client);
+        }
+        if !canvas_id.is_empty() {
+            let canvas = self.get_create(canvas_id);
+            canvas.write().add(&canvas, client);
+        }
     }
 
     pub fn get_create(&self, canvas_id: Id) -> Canvas {
@@ -59,12 +68,9 @@ impl CanvasDb {
         if data.len() > 2 {
             match data[1] {
                 message::NEW_CLIENTS => {
-                    Canvas::remove_client(client);
                     let canvas_id = message::decode_canvas(data);
-                    if !canvas_id.is_empty() {
-                        let db = Task::cursor_db().get_canvas_db(client.get_db_id());
-                        db.add_client(canvas_id, client);
-                    }
+                    let db = Task::cursor_db().get_canvas_db(client.get_db_id());
+                    db.add_client(canvas_id, client);
                 }
                 _ => {
                     crate::info!(
@@ -119,9 +125,8 @@ type AssignmentMessages = (
 struct CanvasInner {
     clients: Vec<ClientSession>,
     add_clients: HashMap<Slot, ClientSession>,
-    remove_clients: HashMap<Slot, ClientSession>,
+    remove_clients: HashSet<Slot>,
     timer: Option<ReportTimer>,
-    canvas_id: Id,
     moves: Vec<u8>,
 }
 impl CanvasInner {
@@ -138,32 +143,38 @@ impl CanvasInner {
     }
 
     fn add(&mut self, canvas: &Canvas, client: &ClientSession) {
-        let slot = client.get_slot();
-        if self.remove_clients.remove(&slot).is_some() {
+        if self.clients.len() + self.add_clients.len() > 200 {
+            // fixme! test this
             return;
         }
         client.set_canvas_info(CanvasInfo {
             canvas: Some(canvas.clone()),
             slot: UNASSIGNED_SLOT,
         });
-        self.add_clients.insert(slot, client.clone());
-        self.schedule_send(canvas, ADD_DELAY);
+        let slot = client.get_slot();
+        if !self.remove_clients.remove(&slot) {
+            self.add_clients.insert(slot, client.clone());
+            self.schedule_send(canvas, ADD_DELAY);
+        }
     }
 
     fn remove(&mut self, canvas: &Canvas, client: &ClientSession) {
         let slot = client.get_slot();
-        if self.add_clients.remove(&slot).is_some() {
-            return;
+        client.set_canvas_info(CanvasInfo {
+            canvas: None,
+            slot: UNASSIGNED_SLOT,
+        });
+        if self.add_clients.remove(&slot).is_none() {
+            self.remove_clients.insert(slot);
+            self.schedule_send(canvas, ADD_DELAY);
         }
-        self.remove_clients.insert(slot, client.clone());
-        self.schedule_send(canvas, ADD_DELAY);
     }
 
     fn schedule_send(&mut self, canvas: &Canvas, delay: Duration) {
         let when = Instant::now() + delay;
         if let Some(timer) = &mut self.timer {
             if timer.when > when {
-                // fixme! nees to test this
+                // fixme! need to test this
                 timer.when = when;
                 timer.task = canvas.clone().wake_after(when);
             }
@@ -175,70 +186,73 @@ impl CanvasInner {
         }
     }
 
-    fn extract_assignment_messages(&mut self) -> Option<AssignmentMessages> {
+    fn extract_assignment_messages(&mut self, canvas: &Canvas) -> Option<AssignmentMessages> {
         if self.remove_clients.is_empty() && self.add_clients.is_empty() {
             return None;
         }
         let mut msgs = vec![];
         let mut assignments = vec![];
 
-        info!(
-            "\n{:?}:send ({}) \n add {}, remove {}, ",
-            self.canvas_id,
-            self.clients.iter().fold(String::new(), |a, c| format!(
-                "{a} {:?}-{:?}",
-                c.get_slot(),
-                c.get_user_id()
-            )),
-            self.add_clients.iter().fold(String::new(), |a, c| format!(
-                "{a} {:?}-{:?}",
-                c.0,
-                c.1.get_user_id()
-            )),
-            self.remove_clients
-                .keys()
-                .fold(String::new(), |a, c| format!("{a} {c:?}")),
-        );
-
+        let canvas_id = canvas.get_canvas_id();
         let clients = &mut self.clients;
 
         if !self.remove_clients.is_empty() {
             let mut removed_canvas_slots = vec![];
-            let idx = partition_list(clients, |s, pos, other| {
-                if self.remove_clients.contains_key(&s.get_slot()) {
-                    let pos = pos as u8;
-                    removed_canvas_slots.push(pos);
-                    if let Some(other) = other {
-                        other.set_canvas_slot(pos);
+            let idx = partition_list(clients, |client, pos, other| {
+                match client.get_canvas_info().canvas {
+                    Some(cc) if cc.canvas_id == canvas_id => false,
+                    _ => {
+                        let pos = pos as u8;
+                        removed_canvas_slots.push(pos);
+                        if let Some(other) = other {
+                            other.set_canvas_slot(pos);
+                        }
+
+                        true
                     }
-                    true
-                } else {
-                    false
                 }
             });
 
-            if idx < clients.len() {
+            if !removed_canvas_slots.is_empty() {
                 msgs.push(message::encode_removed_clients(
-                    self.canvas_id,
+                    canvas.canvas_id,
                     removed_canvas_slots.len(),
                     removed_canvas_slots.into_iter(),
                 ));
             }
-            clients.truncate(idx); // fixme! test this
-            self.remove_clients.clear(); // fixme! test this
+            clients.truncate(idx);
+            self.remove_clients.clear();
         }
         let old_clients = clients.clone();
 
         if !self.add_clients.is_empty() {
-            msgs.push(message::encode_new_clients(
-                self.canvas_id,
-                self.add_clients.len(),
-                self.add_clients.values().map(|c| {
-                    assignments.push((c.clone(), clients.len() as u8));
-                    clients.push(c.clone());
-                    c.get_user_id()
-                }),
-            ));
+            let add_clients: Vec<_> = self
+                .add_clients
+                .values()
+                .filter_map(|client| {
+                    if let Some(cc) = client.get_canvas_info().canvas
+                        && cc.canvas_id == canvas_id
+                    {
+                        let slot = clients.len() as u8;
+                        client.set_canvas_info(CanvasInfo {
+                            canvas: Some(canvas.clone()),
+                            slot,
+                        });
+                        assignments.push((client.clone(), slot));
+                        clients.push(client.clone());
+                        Some(client.get_user_id())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !add_clients.is_empty() {
+                msgs.push(message::encode_new_clients(
+                    canvas.canvas_id,
+                    add_clients.len(),
+                    add_clients.into_iter(),
+                ));
+            }
 
             self.add_clients.clear();
         }
@@ -258,7 +272,7 @@ impl CanvasInner {
             Bytes::new()
         } else {
             message::encode_new_clients(
-                self.canvas_id,
+                canvas.canvas_id,
                 self.add_clients.len(),
                 clients.iter().map(|c| c.get_user_id()),
             )
@@ -290,13 +304,14 @@ impl CanvasInner {
 
 #[derive(Clone)]
 pub struct Canvas {
+    canvas_id: Id,
     inner: Arc<RwLock<CanvasInner>>,
 }
 impl Canvas {
     pub fn new(canvas_id: Id) -> Self {
         Self {
+            canvas_id,
             inner: Arc::new(RwLock::new(CanvasInner {
-                canvas_id,
                 ..Default::default()
             })),
         }
@@ -310,19 +325,23 @@ impl Canvas {
         self.write().add(self, client);
     }
 
-    pub fn remove_client(client: &ClientSession) {
+    pub fn drop_client(client: &ClientSession) {
         let info = client.get_canvas_info();
         if let Some(canvas) = &info.canvas {
             canvas.write().remove(canvas, client);
-            client.set_canvas_info(Default::default());
         }
+    }
+
+    pub fn get_canvas_id(&self) -> Id {
+        self.canvas_id
     }
 
     fn write(&'_ self) -> RwLockWriteGuard<'_, CanvasInner> {
         self.inner.write().expect("poisoned")
     }
 
-    fn read(&'_ self) -> RwLockReadGuard<'_, CanvasInner> {
+    #[cfg(test)]
+    fn read(&'_ self) -> std::sync::RwLockReadGuard<'_, CanvasInner> {
         self.inner.read().expect("poisoned")
     }
 
@@ -343,9 +362,10 @@ impl Canvas {
                 return;
             }
             guard.try_send_moves();
-            (guard.canvas_id, guard.extract_assignment_messages())
+            (self.canvas_id, guard.extract_assignment_messages(self))
         };
-        if let Some((clients, messages, per_client, all_clients)) = assignments {
+
+        if let Some((old_clients, messages, per_client, all_clients)) = assignments {
             if !all_clients.is_empty() {
                 for (client, canvas_slot) in per_client {
                     client.set_canvas_slot(canvas_slot);
@@ -356,15 +376,11 @@ impl Canvas {
                 }
             }
             for data in messages {
-                for client in &clients {
+                for client in &old_clients {
                     client.send_binary(data.clone()).await;
                 }
             }
         }
-    }
-
-    pub fn get_canvas_id(&self) -> Id {
-        self.read().canvas_id
     }
 }
 
