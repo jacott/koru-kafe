@@ -34,7 +34,7 @@ fn encode_global_dict() {
     assert_eq!(dict.get_id("foo".as_bytes()), Some(0xfffd));
     assert_eq!(dict.get_id("bár\0".as_bytes()), Some(0xfffe));
 
-    let exp = Bytes::from_static(&[8, 102, 111, 111, 0xff, 98, 195, 161, 114, 0, 0xff, 0]);
+    let exp = Bytes::from_static(&[8, 102, 111, 111, 0xff, 98, 195, 161, 114, 0, 0xff, 0xff]);
     assert_eq!(&enc, &exp);
 
     assert_eq!(gd.get_word(0xfffe).unwrap(), "bár\0".as_bytes());
@@ -59,7 +59,7 @@ fn encode_global_dict() {
 fn global_dict_from_data() {
     let data = &[
         0x24, 0x72, 0x65, 0x6d, 0x6f, 0x76, 0x65, 0xff, 0x24, 0x6d, 0x61, 0x74, 0x63, 0x68, 0xff,
-        0x47, 0x61, 0x6d, 0x65, 0xff, 0x50, 0x6c, 0x61, 0x79, 0xff, 0x00,
+        0x47, 0x61, 0x6d, 0x65, 0xff, 0x50, 0x6c, 0x61, 0x79, 0xff, 0x0ff,
     ];
     let dict = GlobalDictDecoder::new(data);
     assert_eq!(
@@ -76,7 +76,7 @@ fn encode_local_dict() {
     le.add("foo".into()).unwrap();
     le.add("bár\0".into()).unwrap();
 
-    let exp = vec![102, 111, 111, 0xff, 98, 195, 161, 114, 0, 0xff, 0];
+    let exp = vec![102, 111, 111, 0xff, 98, 195, 161, 114, 0, 0xff, 0xff];
 
     let mut buffer = BytesMut::new();
     le.encode(&mut buffer);

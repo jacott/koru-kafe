@@ -1,11 +1,9 @@
-use std::cmp::{self, min};
+use std::cmp::{self};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use radixdb::RadixTree;
 
 use crate::ts_net;
-
-pub(crate) const T_TERM: u8 = 0;
 
 const LOCAL_OFFSET: u16 = 0x100;
 const MAX_CAPICITY: u16 = 0xfff0;
@@ -29,37 +27,25 @@ pub trait DictDecoder {
     fn decode(&mut self, mut msg: impl Buf) -> Result<impl Buf, ts_net::Error> {
         const SEP: u8 = 0xff;
         let mut word = BytesMut::new();
-        let mut term = false;
         while msg.has_remaining() {
-            let mut spos = 0;
-            {
-                let chunk = msg.chunk();
-                for &v in chunk.iter() {
-                    match v {
-                        SEP => break,
-                        T_TERM if spos == 0 => {
-                            term = true;
-                            break;
-                        }
-                        _ => spos += 1,
-                    }
+            let chunk = msg.chunk();
+
+            if let Some(pos) = chunk.iter().position(|&c| c == SEP) {
+                word.extend_from_slice(&chunk[..pos]);
+
+                msg.advance(pos + 1);
+
+                if word.is_empty() {
+                    self.finalize();
+                    return Ok(msg);
+                } else {
+                    let w = word.split().freeze();
+                    self.push(w)?;
                 }
-            }
-
-            if spos > 0 {
-                word.extend_from_slice(&msg.chunk()[..spos]);
-                let w = word.freeze();
-                word = BytesMut::new();
-
-                self.push(w)?;
-                msg.advance(min(spos + 1, msg.remaining()));
-            } else if term {
-                msg.advance(spos + 1);
-                self.finalize();
-                return Ok(msg);
             } else {
-                word.extend_from_slice(msg.chunk());
-                msg.advance(msg.chunk().len());
+                let len = chunk.len();
+                word.extend_from_slice(chunk);
+                msg.advance(len);
             }
         }
         Err("Missing dictionary string".into())
@@ -117,11 +103,7 @@ impl GlobalDictEncoder {
             "Global dictionary is already finalized"
         );
         let key = key.into();
-        if !self.k2c.contains_key(&key) {
-            self.insert(key)
-        } else {
-            Ok(())
-        }
+        if !self.k2c.contains_key(&key) { self.insert(key) } else { Ok(()) }
     }
 }
 impl DictEncoder for GlobalDictEncoder {
@@ -141,15 +123,12 @@ pub struct GlobalDictDecoder {
 }
 impl GlobalDictDecoder {
     pub fn new(data: &[u8]) -> Self {
-        let data = if data.ends_with(&[0xff, 0]) {
-            &data[..data.len() - 2]
-        } else {
-            data
-        };
+        let data = if data.ends_with(&[0xff, 0xff]) { &data[..data.len() - 2] } else { data };
         let c2k = data
             .split(|b| b == &0xff)
             .map(|slice| Bytes::from(slice.to_vec()))
             .collect();
+
         Self { c2k }
     }
     pub fn global_as_bytes(&self, buffer: &mut impl BufMut) {
@@ -158,17 +137,13 @@ impl GlobalDictDecoder {
             buffer.put_u8(255);
         }
 
-        buffer.put_u8(0);
+        buffer.put_u8(255);
     }
 }
 impl DictDecoder for GlobalDictDecoder {
     fn get_word(&self, id: u16) -> Option<&Bytes> {
         let id = (id as i32 + self.len() as i32) - GLOBAL_OFFSET;
-        if id >= 0 && id < self.c2k.len() as i32 {
-            self.c2k.get(id as usize)
-        } else {
-            None
-        }
+        if id >= 0 && id < self.c2k.len() as i32 { self.c2k.get(id as usize) } else { None }
     }
 
     fn len(&self) -> u16 {
@@ -219,15 +194,11 @@ impl<'a> LocalDictEncoder<'a> {
             buffer.put_u8(255);
         }
 
-        buffer.put_u8(0);
+        buffer.put_u8(255);
     }
 
     pub fn add(&mut self, key: Bytes) -> Result<u16, &'static str> {
-        if let Some(id) = self.get_id(&key) {
-            Ok(id)
-        } else {
-            self.insert(key)
-        }
+        if let Some(id) = self.get_id(&key) { Ok(id) } else { self.insert(key) }
     }
 
     pub fn is_full(&self) -> bool {
@@ -288,11 +259,7 @@ impl<'a> DictDecoder for LocalDictDecoder<'a> {
         }
         let id = id as i32 - LOCAL_OFFSET as i32;
 
-        if id >= 0 && id < self.c2k.len() as i32 {
-            self.c2k.get(id as usize)
-        } else {
-            None
-        }
+        if id >= 0 && id < self.c2k.len() as i32 { self.c2k.get(id as usize) } else { None }
     }
 
     fn len(&self) -> u16 {

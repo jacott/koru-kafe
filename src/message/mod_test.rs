@@ -104,7 +104,7 @@ fn encode_null_object() {
             Jst::Int(1),
             Jst::EndObject
         ],
-        [8, 120, 255, 0, 22, 1, 0, 65, 0]
+        [8, 120, 255, 255, 22, 1, 0, 65, 0]
     );
 }
 
@@ -115,7 +115,7 @@ fn single_small_int() {
 
 #[test]
 fn small_string() {
-    assert_enc!([jstr("12")], [8, 49, 50, 255, 0, 17, 1, 0]);
+    assert_enc!([jstr("12")], [8, 49, 50, 255, 255, 17, 1, 0]);
     assert_enc!([jstr("\na bit more Ჾ蠇 text\n\x01\x7f\x00\n\n\n")]);
 }
 
@@ -123,7 +123,7 @@ fn small_string() {
 fn preserves_byte_order_mark() {
     assert_enc!(
         [jstr("\u{feff}x")],
-        [8, 239, 187, 191, 120, 255, 0, 17, 1, 0]
+        [8, 239, 187, 191, 120, 255, 255, 17, 1, 0]
     );
 }
 
@@ -131,7 +131,7 @@ fn preserves_byte_order_mark() {
 fn surrogate_characters() {
     let text = "h💣éÿ€";
     let exp = vec![
-        8, 0, 140, 104, 240, 159, 146, 163, 195, 169, 195, 191, 226, 130, 172,
+        8, 255, 140, 104, 240, 159, 146, 163, 195, 169, 195, 191, 226, 130, 172,
     ];
 
     let text = jstr(text);
@@ -170,7 +170,7 @@ fn string_in_global_dict() {
 
     assert_enc!(ge => gd, [jstr("Friday")], [17, 255, 253]);
 
-    assert_enc!(ge => gd, [jstr("new")], [8, 110, 101, 119, 255, 0, 17, 1, 0]);
+    assert_enc!(ge => gd, [jstr("new")], [8, 110, 101, 119, 255, 255, 17, 1, 0]);
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn encode_float() {
     let mut enc = t_encode(&[f], &ge);
     let enc = enc.copy_to_bytes(enc.remaining());
 
-    assert_eq!(&enc.as_ref(), &[8, 0, 13, 127, 248, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(&enc.as_ref(), &[8, 255, 13, 127, 248, 0, 0, 0, 0, 0, 0]);
     let msg = t_decode(enc.slice(1..), &gd).next().unwrap();
     match msg {
         Jst::Float(v) => {
@@ -248,7 +248,7 @@ fn encode_float() {
 fn encode_date() {
     assert_enc!(
         [Jst::Date(Duration::from_millis(1402293586434))],
-        [8, 0, 15, 66, 116, 103, 243, 96, 160, 32, 0]
+        [8, 255, 15, 66, 116, 103, 243, 96, 160, 32, 0]
     );
 }
 
@@ -263,7 +263,7 @@ fn encode_binary() {
     assert_enc!(
         [v],
         [
-            8, 0, 16, 0, 0, 0, 20, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+            8, 255, 16, 0, 0, 0, 20, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
             18, 19,
         ]
     );
@@ -279,7 +279,7 @@ fn encode_array() {
             jstr("hello"),
             Jst::EndObject
         ],
-        [8, 104, 101, 108, 108, 111, 255, 0, 6, 65, 66, 17, 1, 0, 0]
+        [8, 104, 101, 108, 108, 111, 255, 255, 6, 65, 66, 17, 1, 0, 0]
     );
 
     // nested
@@ -301,7 +301,7 @@ fn encode_array() {
             Jst::EndObject
         ],
         [
-            8, 104, 101, 108, 108, 111, 255, 0, 6, 65, 66, 6, 3, 2, 6, 1, 17, 1, 0, 0, 64, 0, 69,
+            8, 104, 101, 108, 108, 111, 255, 255, 6, 65, 66, 6, 3, 2, 6, 1, 17, 1, 0, 0, 64, 0, 69,
             0,
         ]
     );
@@ -330,7 +330,9 @@ fn sparse_arrays() {
 
     assert_enc!(
         v.as_ref(),
-        [6, 64, 10, 255, 10, 254, 18, 127, 129, 120, 65, 19, 0, 0, 20, 180, 2, 0,]
+        [
+            6, 64, 10, 255, 10, 254, 18, 127, 129, 120, 65, 19, 0, 0, 20, 180, 2, 0,
+        ]
     );
 }
 
@@ -354,7 +356,7 @@ fn populated_object() {
         8,                             // Dictionary
         98, 97, 114, 0xff,             // local entry: bar
         98, 97, 122, 0xff,             // local entry: baz
-        0,                             // end-of-dict
+        0xff,                          // end-of-dict
         7,                             // object
         0xff, 0xfe, 17, 1, 0,          // foo: bar
         1, 1, 17, 0xff, 0xfe,          // baz: foo
@@ -369,7 +371,7 @@ fn bad_message() {
         8,                             // Dictionary
         98, 97, 114, 0xff,             // local entry: bar
         98, 97, 122, 0xff,             // local entry: baz
-        0,                             // end-of-dict
+        0xff,                          // end-of-dict
         61, 2, 3, 4,                   // junk
         7,                             // object
         0xff, 0xfe, 17, 1, 0,          // foo: bar
@@ -464,7 +466,7 @@ fn unchanged_encoding_system() {
         to_hex_string(enc),
         "08 73 61 76 65 ff 54 69 63 6b 65 74 ff 6a 4a 39 4d 69 61 48 74 63 64 67 4a 7a 62 \
          46 76 6e ff 62 69 6e 5f 69 64 ff 47 53 74 54 4a 46 58 48 44 5a 6d 53 6b 58 4d 34 \
-         7a ff 00 81 36 11 01 00 11 01 01 11 01 02 07 01 03 11 01 04 ff fe 0b 01 00 00"
+         7a ff ff 81 36 11 01 00 11 01 01 11 01 02 07 01 03 11 01 04 ff fe 0b 01 00 00"
     );
 
     let mut enc = t_encode(&data, &ge);
@@ -493,25 +495,22 @@ fn transportation() {
 
     let gd = ge.encode();
 
-    let mut data1 = encodemsg(&ge);
+    let data1 = encodemsg(&ge);
 
     let mut data = BytesMut::new();
     gd.global_as_bytes(&mut data);
     let data = data.freeze();
 
-    let gd = GlobalDictDecoder::new(data.as_ref());
-    let ge2 = GlobalDictEncoder::from_decoder(&gd).unwrap();
-    let mut data2 = encodemsg(&ge2);
+    let gd2 = GlobalDictDecoder::new(data.as_ref());
+    let ge2 = GlobalDictEncoder::from_decoder(&gd2).unwrap();
+    let data2 = encodemsg(&ge2);
 
     assert_eq!(
         to_hex_string(data.clone()).as_str(),
-        "24 72 65 6d 6f 76 65 ff 24 6d 61 74 63 68 ff 47 61 6d 65 ff 50 6c 61 79 ff 00"
+        "24 72 65 6d 6f 76 65 ff 24 6d 61 74 63 68 ff 47 61 6d 65 ff 50 6c 61 79 ff ff"
     );
 
-    assert_eq!(
-        data1.copy_to_bytes(data1.remaining()),
-        data2.copy_to_bytes(data2.remaining())
-    );
+    assert_eq!(data1, data2);
 }
 
 #[test]
@@ -521,5 +520,5 @@ fn encode_empty_message() {
     let enc = Encoder::message(b'P', &ge);
     let mut enc = enc.encode();
     let enc = enc.copy_to_bytes(enc.remaining());
-    assert_eq!(enc, vec![80, 0]);
+    assert_eq!(enc, vec![80, 255]);
 }

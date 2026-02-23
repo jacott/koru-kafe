@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use dictionary::*;
-pub use dictionary::{DictDecoder, DictEncoder, GlobalDictDecoder, GlobalDictEncoder, LocalDictEncoder};
+pub use dictionary::{
+    DictDecoder, DictEncoder, GlobalDictDecoder, GlobalDictEncoder, LocalDictEncoder,
+};
 pub use jst::Jst;
 use jst::{Error, JsonValue};
 
@@ -11,7 +13,7 @@ use crate::websockets;
 mod dictionary;
 pub mod jst;
 
-const T_TERM: u8 = dictionary::T_TERM;
+const T_TERM: u8 = 0;
 const T_UNDEF: u8 = 1;
 const T_NULL: u8 = 2;
 const T_TRUE: u8 = 3;
@@ -153,7 +155,11 @@ impl<'a> Encoder<'a> {
                 if len != 1 {
                     let dkey = if !self.dict.is_full() && len < 100 && v[0] != b'{' {
                         let id = self.dict.get_id(v);
-                        if id.is_some() { id } else { Some(self.dict.add(v.clone()).expect("Can't add to dict")) }
+                        if id.is_some() {
+                            id
+                        } else {
+                            Some(self.dict.add(v.clone()).expect("Can't add to dict"))
+                        }
                     } else {
                         self.dict.get_id(v)
                     };
@@ -405,7 +411,12 @@ impl<'a> Decoder<'a> {
                     .map(|v| Jst::Float(v as f64 / 10000.0))
                     .unwrap_or(CORRUPT_MESSAGE),
             ),
-            T_FLOAT64 => Some(self.msg.try_get_f64().map(Jst::Float).unwrap_or(CORRUPT_MESSAGE)),
+            T_FLOAT64 => Some(
+                self.msg
+                    .try_get_f64()
+                    .map(Jst::Float)
+                    .unwrap_or(CORRUPT_MESSAGE),
+            ),
             T_DATE => Some(
                 self.msg
                     .try_get_f64()
@@ -500,7 +511,9 @@ impl<'a> Decoder<'a> {
         while let Some(o) = self.next() {
             match o {
                 Jst::Array => object.push(Jst::NestedArray(self.read_array()?)),
-                Jst::NullObject | Jst::Object => object.push(Jst::NestedObject(self.read_object()?)),
+                Jst::NullObject | Jst::Object => {
+                    object.push(Jst::NestedObject(self.read_object()?))
+                }
                 Jst::EndObject => return Ok(object),
                 _ => {
                     object.push(o);
@@ -520,7 +533,9 @@ impl<'a> Decoder<'a> {
                     };
                     match o {
                         Jst::Array => object.insert(key, Jst::NestedArray(self.read_array()?)),
-                        Jst::NullObject | Jst::Object => object.insert(key, Jst::NestedObject(self.read_object()?)),
+                        Jst::NullObject | Jst::Object => {
+                            object.insert(key, Jst::NestedObject(self.read_object()?))
+                        }
                         _ => {
                             object.insert(key, o);
                         }
