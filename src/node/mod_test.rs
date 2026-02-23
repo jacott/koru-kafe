@@ -40,6 +40,20 @@ fn is_reload() {
     assert!(!authc.is_reload());
     authc.version_match = 2;
     assert!(authc.is_reload());
+    assert!(!authc.is_force_reload());
+}
+
+#[test]
+fn is_force_reload() {
+    let authc = ClientConnect {
+        task: Default::default(),
+        version_match: VERSION_RELOAD,
+        init_message: Bytes::new(),
+        slot: 2.into(),
+        upstream_tx: mpsc::channel(1).0,
+    };
+    assert!(authc.is_reload());
+    assert!(authc.is_force_reload());
 }
 
 #[tokio::test]

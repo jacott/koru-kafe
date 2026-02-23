@@ -31,7 +31,7 @@ pub mod upstream_link;
 
 pub use task::Task;
 
-//const VERSION_RELOAD: u8 = 1;
+const VERSION_RELOAD: u8 = 1;
 //const VERSION_CLIENT_AHEAD: u8 = 2;
 const VERSION_CLIENT_BEHIND: u8 = 3;
 const VERSION_GOOD_DICTIONARY: u8 = 4;
@@ -94,11 +94,15 @@ pub struct ClientConnect {
     pub version_match: u8,
 }
 impl ClientConnect {
-    fn is_reload(&self) -> bool {
+    pub fn is_reload(&self) -> bool {
         !matches!(
             self.version_match,
             VERSION_BAD_DICTIONARY | VERSION_GOOD_DICTIONARY | VERSION_CLIENT_BEHIND
         )
+    }
+
+    pub fn is_force_reload(&self) -> bool {
+        matches!(self.version_match, VERSION_RELOAD)
     }
 }
 impl std::fmt::Debug for ClientConnect {

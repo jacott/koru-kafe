@@ -48,6 +48,10 @@ async fn handle_client(
     let alive = Arc::new(atomic::AtomicBool::new(true));
 
     if authc.is_reload() {
+        if authc.is_force_reload() {
+            ws_s.send(Message::text("Lforce-reload")).await?;
+            return Ok(());
+        }
         Err("reload client")?;
     }
 
