@@ -404,6 +404,27 @@ fn large_object() {
 }
 
 #[test]
+fn empty_key() {
+    let mut ge = GlobalDictEncoder::default();
+    ge.add("x").unwrap();
+    let gd = ge.encode();
+
+    let mut o = vec![Jst::Object];
+    o.push(Jst::key(""));
+    o.push(Jst::Int(125));
+    o.push(Jst::key(&[0xefu8, 0xbf, 0xbd][..]));
+    o.push(Jst::string(""));
+    o.push(Jst::key("x"));
+    o.push(Jst::True);
+    o.push(Jst::EndObject);
+
+    let act = t_encode(&o, &ge);
+    let act = to_hex_string(act);
+    assert_eq!(act, "08 ef bf bd ff ff 07 ff ff 0a 7d 01 00 05 ff fe 03 00");
+    assert_enc!(ge => gd, o, [0]);
+}
+
+#[test]
 fn mixed() {
     let mut ge = GlobalDictEncoder::default();
     ge.add("baz").unwrap();

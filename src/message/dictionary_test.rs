@@ -20,9 +20,17 @@ fn dict_add() {
 }
 
 #[test]
+fn dict_add_empty() {
+    let gde = GlobalDictEncoder::default();
+    let mut dict = LocalDictEncoder::new(&gde);
+    assert_eq!(dict.add("".into()), Ok(0xffff));
+}
+
+#[test]
 fn encode_global_dict() {
     let mut dict = GlobalDictEncoder::default();
 
+    dict.add("").unwrap();
     dict.add("foo").unwrap();
     dict.add("bár\0").unwrap();
 
@@ -65,6 +73,10 @@ fn global_dict_from_data() {
     assert_eq!(
         dict.get_word(0xfffd),
         Some(Bytes::from_static(b"Game")).as_ref()
+    );
+    assert_eq!(
+        dict.get_word(0xffff),
+        Some(Bytes::from_static(b"")).as_ref()
     );
 }
 

@@ -8,6 +8,7 @@ use crate::ts_net;
 const LOCAL_OFFSET: u16 = 0x100;
 const MAX_CAPICITY: u16 = 0xfff0;
 const GLOBAL_OFFSET: i32 = 0xffff;
+const EMPTY_BYTES_CODE: u16 = 0xffff;
 
 pub trait DictEncoder {
     fn get_id(&self, key: &[u8]) -> Option<u16>;
@@ -17,6 +18,8 @@ pub trait DictEncoder {
         self.len() == 0
     }
 }
+
+static EMPTY_BYTES: Bytes = Bytes::new();
 
 pub trait DictDecoder {
     fn get_word(&self, id: u16) -> Option<&Bytes>;
@@ -103,7 +106,7 @@ impl GlobalDictEncoder {
             "Global dictionary is already finalized"
         );
         let key = key.into();
-        if !self.k2c.contains_key(&key) { self.insert(key) } else { Ok(()) }
+        if key.is_empty() || self.k2c.contains_key(&key) { Ok(()) } else { self.insert(key) }
     }
 }
 impl DictEncoder for GlobalDictEncoder {
@@ -142,8 +145,12 @@ impl GlobalDictDecoder {
 }
 impl DictDecoder for GlobalDictDecoder {
     fn get_word(&self, id: u16) -> Option<&Bytes> {
-        let id = (id as i32 + self.len() as i32) - GLOBAL_OFFSET;
-        if id >= 0 && id < self.c2k.len() as i32 { self.c2k.get(id as usize) } else { None }
+        if id == EMPTY_BYTES_CODE {
+            Some(&EMPTY_BYTES)
+        } else {
+            let id = (id as i32 + self.len() as i32) - GLOBAL_OFFSET;
+            if id >= 0 && id < self.c2k.len() as i32 { self.c2k.get(id as usize) } else { None }
+        }
     }
 
     fn len(&self) -> u16 {
@@ -221,6 +228,9 @@ impl<'a> LocalDictEncoder<'a> {
 
 impl<'a> DictEncoder for LocalDictEncoder<'a> {
     fn get_id(&self, key: &[u8]) -> Option<u16> {
+        if key.is_empty() {
+            return Some(EMPTY_BYTES_CODE);
+        }
         let id = self.global_dict.get_id(key);
         if id.is_some() {
             id
@@ -255,6 +265,9 @@ impl<'a> LocalDictDecoder<'a> {
 impl<'a> DictDecoder for LocalDictDecoder<'a> {
     fn get_word(&self, id: u16) -> Option<&Bytes> {
         if id >= self.upper_limit {
+            if id == EMPTY_BYTES_CODE {
+                return Some(&EMPTY_BYTES);
+            }
             return self.global_dict.get_word(id);
         }
         let id = id as i32 - LOCAL_OFFSET as i32;
