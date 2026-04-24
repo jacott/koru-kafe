@@ -6,19 +6,18 @@ use std::{
         Arc,
         atomic::{self, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime},
 };
 
 use futures_util::{SinkExt, StreamExt, future::select};
 use http::{
     HeaderName, Uri,
-    header::{ACCEPT_ENCODING, ACCEPT_LANGUAGE, USER_AGENT},
+    header::{ACCEPT_ENCODING, ACCEPT_LANGUAGE, HOST, USER_AGENT},
 };
 use http_body_util::{BodyExt, Empty};
 use hyper::{
     Request, Response, Version,
     body::{Body, Bytes},
-    header::HOST,
     http::HeaderValue,
 };
 use hyper_util::rt::TokioIo;
@@ -30,7 +29,7 @@ use tokio::{
         mpsc::{self, error::TryRecvError},
     },
 };
-use tokio_websockets::{ClientBuilder, Message};
+use tokio_websockets::ClientBuilder;
 
 use crate::{
     Result, info,
@@ -92,17 +91,14 @@ fn convert_uri(uri: &Uri, prefix: &str) -> String {
     format!("{prefix}{uri_str}")
 }
 
-fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr, prefix: Option<&str>) -> Result<()> {
+fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr) -> Result<()> {
     *req.version_mut() = Version::HTTP_11;
 
     let headers = req.headers_mut();
 
-    headers.insert(HOST, HeaderValue::from_str("localhost").unwrap());
     if let Ok(v) = HeaderValue::from_str(ip_addr.to_string().as_str()) {
         headers.insert("X-Real-IP", v);
     }
-
-    *req.uri_mut() = convert_uri(req.uri(), prefix.unwrap_or("")).parse()?;
 
     Ok(())
 }
@@ -114,9 +110,15 @@ pub fn websocket(
 ) -> Result<Response<Empty<Bytes>>> {
     let response = websockets::upgrade_response(&req)?;
     const X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
-    let prefix = format!("ws://{to_authority}");
     let to_authority = to_authority.to_owned();
 
+    let host = req
+        .headers()
+        .get(&HOST)
+        .and_then(|x| x.to_str().ok())
+        .unwrap_or(&to_authority);
+
+    let prefix = format!("ws://{host}");
     let mut wss = ClientBuilder::from_uri(convert_uri(req.uri(), &prefix).parse()?).add_header(
         X_REAL_IP,
         HeaderValue::from_str(from_addr.to_string().as_str())?,
@@ -158,7 +160,6 @@ pub fn websocket(
         let (mut wss_s, mut wss_r) = wss.split();
 
         let (wsc_tx, mut wsc_rx) = mpsc::channel(32);
-        let wsc_tx2 = wsc_tx.clone();
 
         let alive1 = Arc::new(atomic::AtomicBool::new(true));
         let alive2 = alive1.clone();
@@ -190,23 +191,6 @@ pub fn websocket(
         let from_client = pin!(async move {
             while let Some(msg) = wsc_r.next().await {
                 match msg {
-                    Ok(msg)
-                        if msg.is_text()
-                            && msg.as_payload().len() == 1
-                            && msg.as_payload()[0] == b'H' =>
-                    {
-                        alive2.store(true, Ordering::Relaxed);
-                        let now = SystemTime::now();
-                        let msg = Message::text(format!(
-                            "K{}",
-                            now.duration_since(UNIX_EPOCH)
-                                .expect("UNIX_EPOCH")
-                                .as_millis()
-                        ));
-                        if wsc_tx2.send(msg).await.is_err() {
-                            break;
-                        }
-                    }
                     Ok(msg) => {
                         alive2.store(true, Ordering::Relaxed);
                         if wss_s.send(msg).await.is_err() {
@@ -256,7 +240,7 @@ pub fn websocket(
 }
 
 pub async fn pass(mut req: crate::Req, ip_addr: IpAddr, to_authority: &str) -> crate::ResultResp {
-    convert_req(&mut req, &ip_addr, None)?;
+    convert_req(&mut req, &ip_addr)?;
     let client_stream = TcpStream::connect(to_authority).await?;
     let io = TokioIo::new(client_stream);
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
@@ -274,3 +258,7 @@ pub async fn pass(mut req: crate::Req, ip_addr: IpAddr, to_authority: &str) -> c
         body.map_err(|err| err.into()).boxed(),
     ))
 }
+
+#[cfg(test)]
+#[path = "koru_service_test.rs"]
+mod test;
