@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use http::uri::{InvalidUri, Parts};
 use http_body_util::BodyExt;
 use hyper::{
+    Response, StatusCode, Uri,
     body::Bytes,
     header,
     http::uri::{self, PathAndQuery},
-    Response, StatusCode, Uri,
 };
 use radix_trie::Trie;
 use std::{
@@ -20,7 +20,7 @@ use std::{
 };
 use tokio_rustls::rustls;
 
-use crate::{error, koru_service, static_files, BadRequestError};
+use crate::{BadRequestError, error, koru_service, static_files};
 
 pub type DynLocation = dyn Location + Send + Sync;
 pub type RcDynLocation = Arc<DynLocation>;
@@ -136,11 +136,18 @@ impl Domain {
         if let Some(v) = self.read_state().locations.get(path) {
             Some(v.clone())
         } else {
-            self.read_state().location_prefixes.get_ancestor_value(path).cloned()
+            self.read_state()
+                .location_prefixes
+                .get_ancestor_value(path)
+                .cloned()
         }
     }
 
-    pub fn add_service(&self, key: String, value: Arc<koru_service::Service>) -> Option<Arc<koru_service::Service>> {
+    pub fn add_service(
+        &self,
+        key: String,
+        value: Arc<koru_service::Service>,
+    ) -> Option<Arc<koru_service::Service>> {
         let services = &mut self.write_state().services;
         services.insert(key, value)
     }
@@ -189,7 +196,10 @@ impl Domain {
     }
 
     pub fn server_error(&self, code: u16, message: String, path: &str) -> crate::ResultResp {
-        error!("{code} {}{} Server error\n{}\n", self.shared.name, path, message);
+        error!(
+            "{code} {}{} Server error\n{}\n",
+            self.shared.name, path, message
+        );
 
         let sc = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let msg = sc.canonical_reason().unwrap_or("Unknown");
@@ -210,7 +220,9 @@ impl Domain {
     ) -> Result<(), (String, String)> {
         for (name, service) in self.read_state().services.iter() {
             if let Some(cmd) = service.cmd_name()
-                && service_map.insert(cmd.to_string(), service.clone()).is_some()
+                && service_map
+                    .insert(cmd.to_string(), service.clone())
+                    .is_some()
             {
                 return Err((name.to_string(), format!("Duplicate service app {cmd}")));
             }
@@ -239,7 +251,13 @@ pub trait Conf {
 
 #[async_trait]
 pub trait Location {
-    async fn connect(&self, _domain: Domain, _req: crate::Req, _ip_addr: IpAddr, count: u16) -> crate::ResultResp;
+    async fn connect(
+        &self,
+        _domain: Domain,
+        _req: crate::Req,
+        _ip_addr: IpAddr,
+        count: u16,
+    ) -> crate::ResultResp;
 
     fn info(&self) -> String {
         "Location".to_string()
@@ -260,29 +278,70 @@ impl core::fmt::Debug for dyn Conf + Send + Sync {
     }
 }
 
+const ROOT_PATH: PathAndQuery = PathAndQuery::from_static("/");
+
+fn strip_prefix_n(s: &str, n: usize) -> &str {
+    // Find the nth occurrence of the character '/'
+    // match_indices returns (index, matched_str) pairs
+    match s.match_indices('/').nth(n) {
+        Some((index, _)) => &s[index..],
+        None => "", // Return empty if n slashes don't exist
+    }
+}
+
 #[derive(Debug)]
 pub struct Rewrite {
     pub path: String,
+    pub slice: Option<usize>,
 }
-
 #[async_trait]
 impl Location for Rewrite {
-    async fn connect(&self, domain: Domain, mut req: crate::Req, ip_addr: IpAddr, count: u16) -> crate::ResultResp {
+    async fn connect(
+        &self,
+        domain: Domain,
+        mut req: crate::Req,
+        ip_addr: IpAddr,
+        count: u16,
+    ) -> crate::ResultResp {
         if count > 2 {
             return Err("nested connect count exceeded for Rewrite".into());
         }
         let mut parts = req.uri().clone().into_parts();
 
-        if let Some(query) = req.uri().query() {
-            parts.path_and_query = Some(PathAndQuery::from_str(&format!("{}?{}", &self.path, query))?);
-        } else {
-            parts.path_and_query = Some(PathAndQuery::from_str(self.path.as_str())?);
-        }
-        *req.uri_mut() = Uri::from_parts(parts)?;
+        match self.slice {
+            None => {
+                if let Some(query) = req.uri().query() {
+                    parts.path_and_query = Some(PathAndQuery::from_str(&format!(
+                        "{}?{}",
+                        &self.path, query
+                    ))?);
+                } else {
+                    parts.path_and_query = Some(PathAndQuery::from_str(self.path.as_str())?);
+                }
+                *req.uri_mut() = Uri::from_parts(parts)?;
 
-        match domain.find_location(&self.path) {
-            None => Err(format!("Can't find {}", self.path).into()),
-            Some(l) => l.connect(domain, req, ip_addr, count + 1).await,
+                match domain.find_location(&self.path) {
+                    None => Err(format!("Can't find {}", self.path).into()),
+                    Some(l) => l.connect(domain, req, ip_addr, count + 1).await,
+                }
+            }
+            Some(slice) => {
+                let p = parts.path_and_query.unwrap_or(ROOT_PATH);
+                let pq = strip_prefix_n(p.as_str(), slice);
+                if self.path.is_empty() {
+                    parts.path_and_query = Some(PathAndQuery::from_str(pq)?);
+                } else {
+                    let p = format!("{}{pq}", &self.path);
+                    parts.path_and_query = Some(PathAndQuery::from_str(&p)?);
+                }
+
+                *req.uri_mut() = Uri::from_parts(parts)?;
+
+                return match domain.find_location(req.uri().path()) {
+                    None => Err(format!("Can't find {}", self.path).into()),
+                    Some(l) => l.connect(domain, req, ip_addr, count + 1).await,
+                };
+            }
         }
     }
 
@@ -342,8 +401,16 @@ impl Redirect {
 
 #[async_trait]
 impl Location for Redirect {
-    async fn connect(&self, _domain: Domain, req: crate::Req, _ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
-        let parts = self.build_parts(req).map_err(|err| BadRequestError(err.to_string()))?;
+    async fn connect(
+        &self,
+        _domain: Domain,
+        req: crate::Req,
+        _ip_addr: IpAddr,
+        _count: u16,
+    ) -> crate::ResultResp {
+        let parts = self
+            .build_parts(req)
+            .map_err(|err| BadRequestError(err.to_string()))?;
         if parts.authority.is_none() {
             Err(Box::new(BadRequestError("Missing authority".to_string())))
         } else {
@@ -372,7 +439,13 @@ pub struct File {
 
 #[async_trait]
 impl Location for File {
-    async fn connect(&self, _domain: Domain, req: crate::Req, _ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
+    async fn connect(
+        &self,
+        _domain: Domain,
+        req: crate::Req,
+        _ip_addr: IpAddr,
+        _count: u16,
+    ) -> crate::ResultResp {
         static_files::send_file(req.into_parts().0, &self.opts).await
     }
 
@@ -388,7 +461,13 @@ pub struct HttpProxy {
 
 #[async_trait]
 impl Location for HttpProxy {
-    async fn connect(&self, _domain: Domain, req: crate::Req, ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
+    async fn connect(
+        &self,
+        _domain: Domain,
+        req: crate::Req,
+        ip_addr: IpAddr,
+        _count: u16,
+    ) -> crate::ResultResp {
         koru_service::pass(req, ip_addr, &self.server_socket).await
     }
 
@@ -404,13 +483,20 @@ pub struct WebsocketProxy {
 
 #[async_trait]
 impl Location for WebsocketProxy {
-    async fn connect(&self, _domain: Domain, req: crate::Req, ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
+    async fn connect(
+        &self,
+        _domain: Domain,
+        req: crate::Req,
+        ip_addr: IpAddr,
+        _count: u16,
+    ) -> crate::ResultResp {
         let response = koru_service::websocket(req, &ip_addr, &self.server_socket)?;
         let (parts, body) = response.into_parts();
 
         Ok(Response::from_parts(
             parts,
-            body.map_err(|err| crate::Error::from(err.to_string())).boxed(),
+            body.map_err(|err| crate::Error::from(err.to_string()))
+                .boxed(),
         ))
     }
 

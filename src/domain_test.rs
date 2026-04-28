@@ -9,7 +9,13 @@ struct Foo;
 
 #[async_trait]
 impl Location for Foo {
-    async fn connect(&self, _domain: Domain, req: crate::Req, _ip_addr: IpAddr, _count: u16) -> crate::ResultResp {
+    async fn connect(
+        &self,
+        _domain: Domain,
+        req: crate::Req,
+        _ip_addr: IpAddr,
+        _count: u16,
+    ) -> crate::ResultResp {
         let ans = tokio::join!(tokio::task::spawn(async move { req }));
         let req = ans.0.unwrap();
         Ok(crate::resp(
@@ -33,13 +39,18 @@ async fn connect() {
     let req = crate::Request::new(test_util::build_incoming_body(Bytes::new()).await.unwrap());
     let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
-    let resp = d.find_location("/").unwrap().connect(d, req, ip_addr, 0).await.unwrap();
+    let resp = d
+        .find_location("/")
+        .unwrap()
+        .connect(d, req, ip_addr, 0)
+        .await
+        .unwrap();
     let whole_body = resp.collect().await.unwrap().to_bytes();
     assert_eq!(whole_body, "hello GET /");
 }
 
 #[tokio::test]
-async fn rewrite() {
+async fn rewrite_simple() {
     let d: Domain = Default::default();
     d.write_state()
         .locations
@@ -48,17 +59,61 @@ async fn rewrite() {
         "/".to_string(),
         Arc::new(Rewrite {
             path: "/index.html".to_string(),
+            slice: None,
         }),
     );
 
     let body = test_util::build_incoming_body(Bytes::new()).await.unwrap();
-    let req = Request::builder().uri("http://localhost/?abc=123").body(body).unwrap();
+    let req = Request::builder()
+        .uri("http://localhost/?abc=123")
+        .body(body)
+        .unwrap();
     let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
-    let resp = d.find_location("/").unwrap().connect(d, req, ip_addr, 0).await.unwrap();
+    let resp = d
+        .find_location("/")
+        .unwrap()
+        .connect(d, req, ip_addr, 0)
+        .await
+        .unwrap();
     let whole_body = resp.collect().await.unwrap().to_bytes();
 
     assert_eq!(whole_body, "hello GET http://localhost/index.html?abc=123");
+}
+
+#[tokio::test]
+async fn rewrite_slice() {
+    let d: Domain = Default::default();
+    d.write_state()
+        .locations
+        .insert("/store/a/b/c.txt".to_string(), Arc::new(Foo {}));
+    d.write_state().location_prefixes.insert(
+        "/n1".to_string(),
+        Arc::new(Rewrite {
+            path: "".to_string(),
+            slice: Some(1),
+        }),
+    );
+
+    let body = test_util::build_incoming_body(Bytes::new()).await.unwrap();
+    let req = Request::builder()
+        .uri("http://localhost/n1/store/a/b/c.txt?abc=123")
+        .body(body)
+        .unwrap();
+    let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+
+    let resp = d
+        .find_location("/n1/store/a/b/c.txt")
+        .unwrap()
+        .connect(d, req, ip_addr, 0)
+        .await
+        .unwrap();
+    let whole_body = resp.collect().await.unwrap().to_bytes();
+
+    assert_eq!(
+        whole_body,
+        "hello GET http://localhost/store/a/b/c.txt?abc=123"
+    );
 }
 
 #[tokio::test]
@@ -80,11 +135,23 @@ async fn redirect_with_authority() -> crate::Result<()> {
         .unwrap();
     let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
-    let resp = d.find_location("/").unwrap().connect(d, req, ip_addr, 0).await.unwrap();
+    let resp = d
+        .find_location("/")
+        .unwrap()
+        .connect(d, req, ip_addr, 0)
+        .await
+        .unwrap();
 
     assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
     assert_eq!(
-        String::from_utf8(resp.headers().get(header::LOCATION).unwrap().as_bytes().to_vec())?.as_str(),
+        String::from_utf8(
+            resp.headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .as_bytes()
+                .to_vec()
+        )?
+        .as_str(),
         "http://www.test.nz/a/b/c?abc=123"
     );
     let whole_body = resp.collect().await.unwrap().to_bytes();
@@ -116,11 +183,23 @@ async fn redirect_with_scheme() -> crate::Result<()> {
             .unwrap();
         let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
-        let resp = d.find_location("/").unwrap().connect(d, req, ip_addr, 0).await.unwrap();
+        let resp = d
+            .find_location("/")
+            .unwrap()
+            .connect(d, req, ip_addr, 0)
+            .await
+            .unwrap();
 
         assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
         assert_eq!(
-            String::from_utf8(resp.headers().get(header::LOCATION).unwrap().as_bytes().to_vec())?.as_str(),
+            String::from_utf8(
+                resp.headers()
+                    .get(header::LOCATION)
+                    .unwrap()
+                    .as_bytes()
+                    .to_vec()
+            )?
+            .as_str(),
             "https://localhost/a/b/c?abc=123"
         );
         let whole_body = resp.collect().await.unwrap().to_bytes();
@@ -138,11 +217,23 @@ async fn redirect_with_scheme() -> crate::Result<()> {
             .unwrap();
         let ip_addr = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
-        let resp = d.find_location("/").unwrap().connect(d, req, ip_addr, 0).await.unwrap();
+        let resp = d
+            .find_location("/")
+            .unwrap()
+            .connect(d, req, ip_addr, 0)
+            .await
+            .unwrap();
 
         assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
         assert_eq!(
-            String::from_utf8(resp.headers().get(header::LOCATION).unwrap().as_bytes().to_vec())?.as_str(),
+            String::from_utf8(
+                resp.headers()
+                    .get(header::LOCATION)
+                    .unwrap()
+                    .as_bytes()
+                    .to_vec()
+            )?
+            .as_str(),
             "https://test.nz/a/b/c?abc=123"
         );
         let whole_body = resp.collect().await.unwrap().to_bytes();
