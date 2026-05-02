@@ -13,6 +13,7 @@ use futures_util::{SinkExt, StreamExt, future::select};
 use http::{
     HeaderName, Uri,
     header::{ACCEPT_ENCODING, ACCEPT_LANGUAGE, HOST, USER_AGENT},
+    uri::PathAndQuery,
 };
 use http_body_util::{BodyExt, Empty};
 use hyper::{
@@ -86,18 +87,35 @@ impl Service {
     }
 }
 
-fn convert_uri(uri: &Uri, prefix: &str) -> String {
-    let uri_str = uri.path_and_query().map(|x| x.as_str()).unwrap_or("/");
-    format!("{prefix}{uri_str}")
+fn original_host<'a>(req: &'a Request<impl Body>, to_authority: &'a str) -> &'a str {
+    req.uri()
+        .authority()
+        .map(|a| a.as_str())
+        .or_else(|| req.headers().get(HOST).and_then(|h| h.to_str().ok()))
+        .unwrap_or(to_authority)
 }
 
-fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr) -> Result<()> {
+fn convert_req(req: &mut Request<impl Body>, ip_addr: &IpAddr, to_authority: &str) -> Result<()> {
+    let host = HeaderValue::from_str(original_host(req, to_authority))?;
+
     *req.version_mut() = Version::HTTP_11;
-
     let headers = req.headers_mut();
-
+    headers.insert(HOST, host);
     if let Ok(v) = HeaderValue::from_str(ip_addr.to_string().as_str()) {
         headers.insert("X-Real-IP", v);
+    }
+    let uri = req
+        .uri()
+        .path_and_query()
+        .map(|x| x.as_str())
+        .unwrap_or("/");
+
+    match uri.parse() {
+        Ok(uri) => *req.uri_mut() = uri,
+        Err(err) => {
+            crate::info!("Uri parse Error {uri:?}: {err:?}");
+            return Err("bad uri".into());
+        }
     }
 
     Ok(())
@@ -110,16 +128,19 @@ pub fn websocket(
 ) -> Result<Response<Empty<Bytes>>> {
     let response = websockets::upgrade_response(&req)?;
     const X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
-    let to_authority = to_authority.to_owned();
+    let host = original_host(&req, to_authority);
 
-    let host = req
-        .headers()
-        .get(&HOST)
-        .and_then(|x| x.to_str().ok())
-        .unwrap_or(&to_authority);
-
-    let prefix = format!("ws://{host}");
-    let mut wss = ClientBuilder::from_uri(convert_uri(req.uri(), &prefix).parse()?).add_header(
+    let uri = Uri::builder()
+        .scheme("ws")
+        .authority(host) // Works if host is &str or Authority
+        .path_and_query(
+            req.uri()
+                .path_and_query()
+                .cloned()
+                .unwrap_or_else(|| PathAndQuery::from_static("/")),
+        )
+        .build()?;
+    let mut wss = ClientBuilder::from_uri(uri).add_header(
         X_REAL_IP,
         HeaderValue::from_str(from_addr.to_string().as_str())?,
     )?;
@@ -131,6 +152,7 @@ pub fn websocket(
     }
 
     let from_addr = from_addr.to_string();
+    let to_authority = to_authority.to_owned();
 
     tokio::task::spawn(async move {
         let wsc = match websockets::upgrade(&mut req).await {
@@ -240,7 +262,7 @@ pub fn websocket(
 }
 
 pub async fn pass(mut req: crate::Req, ip_addr: IpAddr, to_authority: &str) -> crate::ResultResp {
-    convert_req(&mut req, &ip_addr)?;
+    convert_req(&mut req, &ip_addr, to_authority)?;
     let client_stream = TcpStream::connect(to_authority).await?;
     let io = TokioIo::new(client_stream);
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
