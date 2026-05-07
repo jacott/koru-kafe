@@ -165,13 +165,20 @@ impl Domain {
         self.read_state().confs.get(path).cloned()
     }
 
-    pub fn handle_error(&self, err: crate::Error, path: &str) -> crate::ResultResp {
+    pub fn handle_error(
+        &self,
+        err: crate::Error,
+        ip_addr: IpAddr,
+        path: &str,
+    ) -> crate::ResultResp {
         if let Some(e) = err.downcast_ref::<io::Error>() {
             return match e.kind() {
                 io::ErrorKind::PermissionDenied => self.client_error(400),
                 io::ErrorKind::NotFound => self.client_error(404),
-                io::ErrorKind::ConnectionRefused => self.server_error(502, e.to_string(), path),
-                _ => self.server_error(500, e.to_string(), path),
+                io::ErrorKind::ConnectionRefused => {
+                    self.server_error(502, ip_addr, e.to_string(), path)
+                }
+                _ => self.server_error(500, ip_addr, e.to_string(), path),
             };
         }
 
@@ -179,14 +186,14 @@ impl Domain {
             if e.is_user() || e.is_parse() {
                 return self.client_error(400);
             }
-            return self.server_error(503, e.to_string(), path);
+            return self.server_error(503, ip_addr, e.to_string(), path);
         }
 
         if err.downcast_ref::<BadRequestError>().is_some() {
             return self.client_error(400);
         }
 
-        self.server_error(500, err.to_string(), path)
+        self.server_error(500, ip_addr, err.to_string(), path)
     }
 
     pub fn client_error(&self, code: u16) -> crate::ResultResp {
@@ -195,9 +202,15 @@ impl Domain {
         Ok(crate::resp(code, Bytes::from(msg)))
     }
 
-    pub fn server_error(&self, code: u16, message: String, path: &str) -> crate::ResultResp {
+    pub fn server_error(
+        &self,
+        code: u16,
+        ip_addr: IpAddr,
+        message: String,
+        path: &str,
+    ) -> crate::ResultResp {
         error!(
-            "{code} {}{} Server error\n{}\n",
+            "{code} source address ({ip_addr}) {}{} Server error\n{}\n",
             self.shared.name, path, message
         );
 

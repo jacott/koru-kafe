@@ -24,11 +24,12 @@ async fn handler(
         match domain.find_location(req.uri().path()) {
             None => domain.handle_error(
                 Box::new(io::Error::new(io::ErrorKind::NotFound, "Not Found")),
+                ip_addr,
                 req.uri().path(),
             ),
             Some(loc) => match loc.connect(domain.clone(), req, ip_addr, 0).await {
                 Ok(resp) => Ok(resp),
-                Err(err) => domain.handle_error(err, ""),
+                Err(err) => domain.handle_error(err, ip_addr, ""),
             },
         }
     } else {
