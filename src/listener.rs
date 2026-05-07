@@ -32,7 +32,10 @@ async fn handler(
             },
         }
     } else {
-        info!("{} 404 - no domain handler", req.uri().path());
+        info!(
+            "{} 404 ({ip_addr})- no domain handler - host {host:?}",
+            req.uri().path()
+        );
         Ok(crate::resp_404())
     }
 }
