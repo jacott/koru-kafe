@@ -46,4 +46,12 @@ fn encode_assign_slot() {
     assert_eq!(decode_assigned_slot(&msg), 6);
 }
 
+#[test]
+fn encode_broadcast() {
+    let msg = super::encode_broadcast(56, &[1, 2, 3, 4]);
+    let (slot, data) = super::decode_broadcast(&msg);
+    assert_eq!(slot, 56);
+    assert_eq!(data, &[1, 2, 3, 4]);
+}
+
 // fixme! limit max clients

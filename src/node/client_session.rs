@@ -177,14 +177,19 @@ impl ClientSession {
         Ok(())
     }
 
-    pub fn try_send_binary(&self, data: Bytes) {
-        let _ = self.inner.client_sink.try_send(Message::binary(data));
+    pub fn try_send_binary(&self, data: Bytes) -> bool {
+        self.inner
+            .client_sink
+            .try_send(Message::binary(data))
+            .is_ok()
     }
 
-    pub(crate) fn send_binary_unless_half_full(&self, data: &Bytes) {
+    pub(crate) fn send_binary_unless_half_full(&self, data: &Bytes) -> bool {
         let maxcap = self.inner.client_sink.max_capacity();
         if (maxcap - self.inner.client_sink.capacity()) << 1 < maxcap {
-            self.try_send_binary(data.clone());
+            self.try_send_binary(data.clone())
+        } else {
+            false
         }
     }
 

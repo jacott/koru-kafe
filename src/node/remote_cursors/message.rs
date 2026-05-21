@@ -11,6 +11,7 @@ pub const MOVE: u8 = 0;
 pub const NEW_CLIENTS: u8 = 2;
 pub const REMOVED_CLIENTS: u8 = 3;
 pub const ASSIGN_SLOT: u8 = 4;
+pub const BROADCAST: u8 = 5;
 
 pub const ID_LEN: usize = std::mem::size_of::<u128>();
 pub const COORD_SIZE: usize = 4;
@@ -69,6 +70,15 @@ pub fn encode_removed_clients(
     msg.freeze()
 }
 
+pub fn encode_broadcast(slot: u8, msg: &[u8]) -> Bytes {
+    let mut out = BytesMut::with_capacity(msg.len() + 2);
+    out.put_u8(CURSOR_CMD);
+    out.put_u8(BROADCAST);
+    out.put_u8(slot);
+    out.put_slice(msg);
+    out.freeze()
+}
+
 pub fn decode_canvas(mut msg: &[u8]) -> Id {
     if msg.len() < ID_LEN + 2 {
         Id::default()
@@ -95,6 +105,12 @@ pub fn decode_removes(mut msg: &[u8]) -> impl Iterator<Item = u8> {
 pub fn decode_assigned_slot(mut msg: &[u8]) -> u8 {
     msg.advance(min(msg.remaining(), 2 + ID_LEN));
     msg.get_u8()
+}
+
+pub fn decode_broadcast(mut msg: &[u8]) -> (u8, &[u8]) {
+    msg.advance(min(msg.remaining(), 2));
+    let slot = msg.get_u8();
+    (slot, msg)
 }
 
 #[cfg(test)]

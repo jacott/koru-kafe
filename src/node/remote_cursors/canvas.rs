@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use log::info;
 use tokio::time::Instant;
 
@@ -86,21 +86,9 @@ impl CanvasDb {
 
     pub fn client_message(client: &ClientSession, data: &[u8]) {
         if data.len() > 2 {
-            match data[1] {
-                message::MOVE => {
-                    let info = client.get_canvas_info();
-                    if let Some(canvas) = info.canvas {
-                        canvas.cursor_move(info.slot, data);
-                    }
-                }
-                _ => {
-                    crate::info!(
-                        "Unexpected Canvas command {:?}, {:?} - {:?}",
-                        data[1],
-                        client.get_slot(),
-                        client.get_user_id(),
-                    );
-                }
+            let info = client.get_canvas_info();
+            if let Some(canvas) = info.canvas {
+                canvas.client_message(info.slot, data);
             }
         }
     }
@@ -130,6 +118,20 @@ struct CanvasInner {
     moves: Vec<u8>,
 }
 impl CanvasInner {
+    fn client_message(&mut self, canvas: &Canvas, slot: u8, data: &[u8]) {
+        match data[1] {
+            message::MOVE => {
+                self.cursor_move(canvas, slot, data);
+            }
+            message::BROADCAST => {
+                self.broadcast(slot, data);
+            }
+            _ => {
+                crate::info!("Unexpected Canvas command {:?}, {:?}", data[1], slot,);
+            }
+        }
+    }
+
     fn cursor_move(&mut self, canvas: &Canvas, slot: u8, data: &[u8]) {
         if self.moves.is_empty() {
             self.moves.push(message::CURSOR_CMD);
@@ -139,6 +141,31 @@ impl CanvasInner {
         if data.len() == message::COORD_SIZE {
             message::add_move(&mut self.moves, slot, data);
             self.schedule_send(canvas, MOVE_DELAY);
+        }
+    }
+
+    fn broadcast(&mut self, slot: u8, data: &[u8]) {
+        if data.len() > 2 {
+            let mut bytes_mut = BytesMut::with_capacity(data.len());
+            bytes_mut.extend_from_slice(data);
+            bytes_mut[2] = slot;
+
+            let bytes = bytes_mut.freeze();
+            let mut congested_clients = Vec::new();
+            for client in &self.clients {
+                if client.get_canvas_info().slot != slot
+                    && !client.send_binary_unless_half_full(&bytes)
+                {
+                    congested_clients.push(client.clone());
+                }
+            }
+            if !congested_clients.is_empty() {
+                tokio::spawn(async move {
+                    for client in congested_clients {
+                        client.send_binary(bytes.clone()).await;
+                    }
+                });
+            }
         }
     }
 
@@ -317,8 +344,8 @@ impl Canvas {
         }
     }
 
-    pub fn cursor_move(&self, slot: u8, data: &[u8]) {
-        self.write().cursor_move(self, slot, data);
+    pub fn client_message(&self, slot: u8, data: &[u8]) {
+        self.write().client_message(self, slot, data);
     }
 
     pub fn add_client(&self, client: &ClientSession) {
