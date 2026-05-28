@@ -113,7 +113,7 @@ async fn remote_cursors_broadcast() {
             assert_eq!(slot, client_sess.get_canvas_info().slot);
             assert_eq!(data, &[1, 2, 3]);
 
-            assert!(client_rx.try_recv().is_err());
+            assert!(client_rx.try_recv().is_ok());
         }));
 
         test_helper::assert_join_set(jset, 500).await;

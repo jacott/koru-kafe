@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    mem,
     sync::{Arc, RwLock, RwLockWriteGuard},
     time::Duration,
 };
@@ -96,6 +97,7 @@ impl CanvasDb {
 
 pub(crate) const ADD_DELAY: Duration = Duration::from_millis(100);
 pub(crate) const MOVE_DELAY: Duration = Duration::from_millis(30);
+pub(crate) const BROADCAST_DELAY: Duration = Duration::from_millis(0);
 
 struct ReportTimer {
     when: Instant,
@@ -116,6 +118,7 @@ struct CanvasInner {
     remove_clients: HashSet<Slot>,
     timer: Option<ReportTimer>,
     moves: Vec<u8>,
+    broadcasts: Vec<(ClientSession, BytesMut)>,
 }
 impl CanvasInner {
     fn client_message(&mut self, canvas: &Canvas, slot: u8, data: &[u8]) {
@@ -124,7 +127,7 @@ impl CanvasInner {
                 self.cursor_move(canvas, slot, data);
             }
             message::BROADCAST => {
-                self.broadcast(slot, data);
+                self.broadcast(canvas, slot, data);
             }
             _ => {
                 crate::info!("Unexpected Canvas command {:?}, {:?}", data[1], slot,);
@@ -144,27 +147,12 @@ impl CanvasInner {
         }
     }
 
-    fn broadcast(&mut self, slot: u8, data: &[u8]) {
+    fn broadcast(&mut self, canvas: &Canvas, slot: u8, data: &[u8]) {
         if data.len() > 2 {
-            let mut bytes_mut = BytesMut::with_capacity(data.len());
-            bytes_mut.extend_from_slice(data);
-            bytes_mut[2] = slot;
-
-            let bytes = bytes_mut.freeze();
-            let mut congested_clients = Vec::new();
-            for client in &self.clients {
-                if client.get_canvas_info().slot != slot
-                    && !client.send_binary_unless_half_full(&bytes)
-                {
-                    congested_clients.push(client.clone());
-                }
-            }
-            if !congested_clients.is_empty() {
-                tokio::spawn(async move {
-                    for client in congested_clients {
-                        client.send_binary(bytes.clone()).await;
-                    }
-                });
+            if self.broadcasts.len() < 5 {
+                self.broadcasts
+                    .push((self.clients[slot as usize].clone(), data.into()));
+                self.schedule_send(canvas, BROADCAST_DELAY);
             }
         }
     }
@@ -203,7 +191,9 @@ impl CanvasInner {
             if timer.when > when {
                 // fixme! need to test this
                 timer.when = when;
-                timer.task = canvas.clone().wake_after(when);
+                let mut task = canvas.clone().wake_after(when);
+                mem::swap(&mut timer.task, &mut task);
+                task.abort();
             }
         } else {
             self.timer = Some(ReportTimer {
@@ -367,7 +357,6 @@ impl Canvas {
         self.inner.write().expect("poisoned")
     }
 
-    #[cfg(test)]
     fn read(&'_ self) -> std::sync::RwLockReadGuard<'_, CanvasInner> {
         self.inner.read().expect("poisoned")
     }
@@ -383,13 +372,17 @@ impl Canvas {
     }
 
     async fn flush(&self, when: Instant) {
-        let (canvas_id, assignments) = {
+        let (canvas_id, assignments, broadcasts) = {
             let mut guard = self.write();
             if !guard.fulfill_flush(when) {
                 return;
             }
             guard.try_send_moves();
-            (self.canvas_id, guard.extract_assignment_messages(self))
+            (
+                self.canvas_id,
+                guard.extract_assignment_messages(self),
+                mem::take(&mut guard.broadcasts),
+            )
         };
 
         if let Some((old_clients, messages, per_client, all_clients)) = assignments {
@@ -405,6 +398,28 @@ impl Canvas {
             for data in messages {
                 for client in &old_clients {
                     client.send_binary(data.clone()).await;
+                }
+            }
+        }
+
+        if !broadcasts.is_empty() {
+            for (sess, mut msg) in broadcasts {
+                msg[2] = sess.get_canvas_info().slot;
+                let msg = msg.freeze();
+                let mut congested_clients = Vec::new();
+
+                {
+                    let guard = self.read();
+                    for client in &guard.clients {
+                        if !client.send_binary_unless_half_full(&msg) {
+                            congested_clients.push(client.clone());
+                        }
+                    }
+                }
+                if !congested_clients.is_empty() {
+                    for client in congested_clients {
+                        client.send_binary(msg.clone()).await;
+                    }
                 }
             }
         }
