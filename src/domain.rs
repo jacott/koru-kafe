@@ -324,10 +324,8 @@ impl Location for Rewrite {
         match self.slice {
             None => {
                 if let Some(query) = req.uri().query() {
-                    parts.path_and_query = Some(PathAndQuery::from_str(&format!(
-                        "{}?{}",
-                        &self.path, query
-                    ))?);
+                    parts.path_and_query =
+                        Some(PathAndQuery::from_str(&format!("{}?{}", self.path, query))?);
                 } else {
                     parts.path_and_query = Some(PathAndQuery::from_str(self.path.as_str())?);
                 }
@@ -344,7 +342,7 @@ impl Location for Rewrite {
                 if self.path.is_empty() {
                     parts.path_and_query = Some(PathAndQuery::from_str(pq)?);
                 } else {
-                    let p = format!("{}{pq}", &self.path);
+                    let p = format!("{}{pq}", self.path);
                     parts.path_and_query = Some(PathAndQuery::from_str(&p)?);
                 }
 

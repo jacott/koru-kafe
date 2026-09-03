@@ -54,7 +54,7 @@ async fn remote_cursors_new_client() {
 
             let msg = client_rx.recv().await.unwrap();
             let msg = msg.as_payload();
-            let clients: Vec<_> = remote_cursors::message::decode_clients(&msg)
+            let clients: Vec<_> = remote_cursors::message::decode_clients(msg)
                 .map(|i| i.to_string())
                 .collect();
 
@@ -108,7 +108,7 @@ async fn remote_cursors_broadcast() {
 
             let msg = client2_rx.recv().await.unwrap();
             let msg = msg.as_payload();
-            let (slot, data) = remote_cursors::message::decode_broadcast(&msg);
+            let (slot, data) = remote_cursors::message::decode_broadcast(msg);
 
             assert_eq!(slot, client_sess.get_canvas_info().slot);
             assert_eq!(data, &[1, 2, 3]);

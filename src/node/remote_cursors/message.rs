@@ -19,7 +19,12 @@ pub const MOVE_SIZE: usize = COORD_SIZE + 1;
 
 pub fn add_move(moves: &mut Vec<u8>, slot: u8, data: &[u8]) {
     let moves2 = moves.get_mut(2..).expect("should have header");
-    if let Some(chunk) = moves2.chunks_exact_mut(MOVE_SIZE).find(|c| c[0] == slot) {
+    if let Some(chunk) = moves2
+        .as_chunks_mut::<MOVE_SIZE>()
+        .0
+        .iter_mut()
+        .find(|c| c[0] == slot)
+    {
         chunk[1..].copy_from_slice(data);
     } else {
         moves.push(slot);

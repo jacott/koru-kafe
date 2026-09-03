@@ -341,7 +341,7 @@ async fn start_uds(koru_node: KoruNode, path: String) {
     let listener = match UnixListener::bind(&path) {
         Ok(listener) => listener,
         Err(error) => {
-            panic!("Can't bind listener to \"{}\": {:?}", &path, error.kind())
+            panic!("Can't bind listener to \"{}\": {:?}", path, error.kind())
         }
     };
 

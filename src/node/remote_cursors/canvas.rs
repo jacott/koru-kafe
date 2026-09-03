@@ -148,12 +148,10 @@ impl CanvasInner {
     }
 
     fn broadcast(&mut self, canvas: &Canvas, slot: u8, data: &[u8]) {
-        if data.len() > 2 {
-            if self.broadcasts.len() < 5 {
-                self.broadcasts
-                    .push((self.clients[slot as usize].clone(), data.into()));
-                self.schedule_send(canvas, BROADCAST_DELAY);
-            }
+        if data.len() > 2 && self.broadcasts.len() < 5 {
+            self.broadcasts
+                .push((self.clients[slot as usize].clone(), data.into()));
+            self.schedule_send(canvas, BROADCAST_DELAY);
         }
     }
 

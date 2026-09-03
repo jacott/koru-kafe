@@ -65,7 +65,7 @@ impl std::fmt::Debug for ClientSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
             "ClientSession({:?})",
-            &self.get_slot().as_u16()
+            self.get_slot().as_u16()
         ))
     }
 }
