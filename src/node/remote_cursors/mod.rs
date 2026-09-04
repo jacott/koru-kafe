@@ -5,6 +5,8 @@ use std::{
 
 use canvas::CanvasDb;
 
+use crate::id::Id;
+
 pub mod canvas;
 pub mod message;
 
@@ -19,8 +21,22 @@ impl Db {
                 .write()
                 .expect("poisoned")
                 .entry(db_id)
-                .or_default()
+                .or_insert_with(|| CanvasDb::new(db_id))
                 .clone()
+        }
+    }
+
+    pub fn remove_db_if_empty(&self, db_id: u64) {
+        let mut guard = self.0.write().expect("poisoned");
+        if let Some(canvas_db) = guard.get(&db_id)
+            && canvas_db.is_empty()
+        {
+            guard.remove(&db_id);
+            crate::info!(
+                "close canvas {} {}",
+                Id::from(db_id as u128).to_string(),
+                guard.len()
+            );
         }
     }
 }

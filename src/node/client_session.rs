@@ -31,7 +31,6 @@ impl Info {
     fn set_db_id<I: Into<Id>>(&mut self, db_id: I) {
         let db_id: Id = db_id.into();
         let db_id: u128 = db_id.into();
-
         self.db_id = db_id as u64;
     }
 }

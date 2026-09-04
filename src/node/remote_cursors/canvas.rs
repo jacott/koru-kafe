@@ -6,7 +6,6 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use log::info;
 use tokio::time::Instant;
 
 use crate::{
@@ -32,8 +31,22 @@ impl Default for CanvasInfo {
 }
 
 #[derive(Default, Clone)]
-pub struct CanvasDb(Arc<RwLock<HashMap<Id, Canvas>>>);
+pub struct CanvasDb {
+    db_id: u64,
+    inner: Arc<RwLock<HashMap<Id, Canvas>>>,
+}
 impl CanvasDb {
+    pub fn new(db_id: u64) -> Self {
+        Self {
+            db_id,
+            inner: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().expect("poisoned").is_empty()
+    }
+
     pub fn add_client(&self, canvas_id: Id, client: &ClientSession) {
         let info = client.get_canvas_info();
         if let Some(ref canvas) = info.canvas {
@@ -49,20 +62,40 @@ impl CanvasDb {
     }
 
     pub fn get_create(&self, canvas_id: Id) -> Canvas {
-        if let Some(db) = self.0.read().expect("poisoned").get(&canvas_id) {
+        if let Some(db) = self.inner.read().expect("poisoned").get(&canvas_id) {
             db.clone()
         } else {
-            self.0
+            self.inner
                 .write()
                 .expect("poisoned")
                 .entry(canvas_id)
-                .or_insert_with(|| Canvas::new(canvas_id))
+                .or_insert_with(|| Canvas::new(self.db_id, canvas_id))
                 .clone()
         }
     }
 
     pub fn get(&self, canvas_id: Id) -> Option<Canvas> {
-        self.0.read().expect("poisoned").get(&canvas_id).cloned()
+        self.inner
+            .read()
+            .expect("poisoned")
+            .get(&canvas_id)
+            .cloned()
+    }
+
+    pub fn remove_if_empty(&self, canvas_id: Id) -> bool {
+        let mut guard = self.inner.write().expect("poisoned");
+        if let Some(canvas) = guard.get(&canvas_id) {
+            let inner = canvas.read();
+            if inner.clients.is_empty()
+                && inner.add_clients.is_empty()
+                && inner.remove_clients.is_empty()
+                && inner.timer.is_none()
+            {
+                drop(inner);
+                guard.remove(&canvas_id);
+            }
+        }
+        guard.is_empty()
     }
 
     pub fn upstream_message(client: &ClientSession, data: &[u8]) {
@@ -272,17 +305,6 @@ impl CanvasInner {
             self.add_clients.clear();
         }
 
-        info!(
-            "\nnow ({}) \n msgs {}, assignments {}, ",
-            clients.iter().fold(String::new(), |a, c| format!(
-                "{a} {:?}-{:?}",
-                c.get_slot(),
-                c.get_user_id()
-            )),
-            msgs.len(),
-            assignments.len(),
-        );
-
         let all_clients = if assignments.is_empty() {
             Bytes::new()
         } else {
@@ -319,12 +341,14 @@ impl CanvasInner {
 
 #[derive(Clone)]
 pub struct Canvas {
+    db_id: u64,
     canvas_id: Id,
     inner: Arc<RwLock<CanvasInner>>,
 }
 impl Canvas {
-    pub fn new(canvas_id: Id) -> Self {
+    pub fn new(db_id: u64, canvas_id: Id) -> Self {
         Self {
+            db_id,
             canvas_id,
             inner: Arc::new(RwLock::new(CanvasInner {
                 ..Default::default()
@@ -360,13 +384,14 @@ impl Canvas {
     }
 
     fn wake_after(self, when: Instant) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
+        let task = Task::local_or_new();
+        tokio::spawn(task.with(async move {
             let now = Instant::now();
             if when > now {
                 tokio::time::sleep(when - now).await;
             }
             self.flush(when).await;
-        })
+        }))
     }
 
     async fn flush(&self, when: Instant) {
@@ -419,6 +444,23 @@ impl Canvas {
                         client.send_binary(msg.clone()).await;
                     }
                 }
+            }
+        }
+
+        // Cleanup check after all messages are processed
+        let is_empty = {
+            let guard = self.read();
+            guard.clients.is_empty()
+                && guard.add_clients.is_empty()
+                && guard.remove_clients.is_empty()
+                && guard.timer.is_none()
+        };
+
+        if is_empty {
+            let cursor_db = Task::cursor_db();
+            let canvas_db = cursor_db.get_canvas_db(self.db_id);
+            if canvas_db.remove_if_empty(self.canvas_id) {
+                cursor_db.remove_db_if_empty(self.db_id);
             }
         }
     }

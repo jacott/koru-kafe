@@ -144,7 +144,7 @@ async fn double_add_client_different() {
             );
             assert_eq!(user1.get_canvas_info().slot, 255);
             assert_eq!(canvas2.read().remove_clients.len(), 1);
-            assert_eq!(canvas1.read().add_clients.len(), 1);
+            assert_eq!(canvas1.read().add_clients.len(), 0);
 
             db.add_client(canvas_id2, &user1);
             assert_eq!(
