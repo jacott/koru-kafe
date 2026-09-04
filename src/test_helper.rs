@@ -30,7 +30,7 @@ pub(crate) async fn assert_join_set(mut js: JoinSet<()>, to_ms: u64) {
 
 pub(crate) fn set_test_db() {
     let _ = node::Task::set_db_url(&format!(
-        "host=/var/run/postgresql dbname=training-simstest user={}",
+        "host=/var/run/postgresql dbname=koru-kafe-test user={}",
         env!("USER")
     ));
 }

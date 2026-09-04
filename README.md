@@ -10,6 +10,16 @@ project is to accelerate Koru applications by moving and duplicating performance
 functionality from the Node.js layer into the Rust environment.
 
 
+## Testing
+Requires local postgresql with the following setup:
+
+```sh
+sudo -u postgres createuser -drs $USER
+
+createdb $USER
+createdb koru-kafe-test
+```
+
 ## License
 
 MIT license ([LICENSE-MIT][6] or <http://opensource.org/licenses/MIT>)

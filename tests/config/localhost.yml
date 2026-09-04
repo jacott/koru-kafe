@@ -10,5 +10,5 @@ locations:
   /: {rewrite: /index.html}
   /*: {http_proxy: app}
   /tmp/*: {file: {root: /home/geoffj}}
-  /favicon.ico: {file: {root: /home/geoffj/src/training-sims/app}}
+  /favicon.ico: {file: {root: /home/geoffj/src/koru-foo/app}}
   /{rc,ws/*}: {websocket_proxy: app}

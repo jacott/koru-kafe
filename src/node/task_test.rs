@@ -18,19 +18,29 @@ async fn db_conn() {
                         let conn = Task::db_conn();
                         let conn2 = Task::db_conn();
 
-                        conn.execute("BEGIN", &[]).await.unwrap();
+                        conn2
+                            .execute(r#"drop table if exists foo"#, &[])
+                            .await
+                            .unwrap();
+
                         conn2
                             .execute(
-                                r#"insert into "Game" (_id) values ($1::TEXT)"#,
-                                &[&"game123"],
+                                r#"create table foo ( _id text not null collate pg_catalog."C")"#,
+                                &[],
                             )
+                            .await
+                            .unwrap();
+
+                        conn.execute("BEGIN", &[]).await.unwrap();
+                        conn2
+                            .execute(r#"insert into foo (_id) values ($1::TEXT)"#, &[&"foo123"])
                             .await
                             .unwrap();
                     }
 
                     Task::scope(async {
                         let conn = Task::db_conn();
-                        let row = conn.query(r#"select _id from "Game""#, &[]).await.unwrap();
+                        let row = conn.query(r#"select _id from foo"#, &[]).await.unwrap();
                         assert_eq!(row.len(), 0);
                     })
                     .await;
@@ -38,12 +48,12 @@ async fn db_conn() {
                     {
                         let conn = Task::db_conn();
                         let row = conn
-                            .query_opt(r#"select _id from "Game""#, &[])
+                            .query_opt(r#"select _id from foo"#, &[])
                             .await
                             .unwrap()
                             .unwrap();
                         let two: String = row.try_get(0).unwrap();
-                        assert_eq!(&two, "game123");
+                        assert_eq!(&two, "foo123");
                     }
                 }
             }));
