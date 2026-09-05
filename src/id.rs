@@ -1,5 +1,5 @@
 use std::{
-    fmt::{Debug, Display},
+    fmt::{Debug, Display, Write},
     hash::Hash,
 };
 
@@ -7,7 +7,7 @@ use tokio_postgres::types::{FromSql, Type as PgType};
 
 use crate::uuidv7::{CHARS, Uuidv7, char_to_u6};
 
-pub fn pack_v1id(bytes: &[u8]) -> u128 {
+fn pack_v1id(bytes: &[u8]) -> u128 {
     let mut res = 63u128;
     for b in bytes {
         res = (res << 6) | char_to_u6(*b) as u128;
@@ -15,38 +15,9 @@ pub fn pack_v1id(bytes: &[u8]) -> u128 {
     res
 }
 
-pub fn unpack_v1id(val: u128) -> String {
-    const TERM: usize = 63;
-    let mut id = String::new();
-
-    let mut shift = 16 * 6;
-    let mut code = 0;
-
-    while shift != 0 && code == 0 {
-        code = (val >> shift) as usize & TERM;
-
-        if code != 0 {
-            if code != TERM {
-                id.push(CHARS[code] as char);
-            }
-            break;
-        }
-        shift -= 6;
-    }
-
-    while shift != 0 {
-        shift -= 6;
-        code = (val >> shift) as usize & 63;
-        if code == TERM {
-            return id;
-        }
-        id.push(CHARS[code] as char);
-    }
-
-    id
-}
-
-const OLD_MAX_TIME: u128 = 324438067906031283646553055293375;
+const OLD_MAX_TIME: u128 = 0x4000000000000 << 64;
+const FULL_ID: u128 = 319447951257513809177169207754752;
+const EXTENDED_ID: u128 = 324518553658426726783156020576256;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Id(Uuidv7);
@@ -89,13 +60,64 @@ impl Debug for Id {
 impl Display for Id {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let n: u128 = self.0.into();
-        let s = if n < OLD_MAX_TIME { unpack_v1id(n) } else { self.0.to_string() };
-        f.write_str(&s)
+
+        if n < OLD_MAX_TIME {
+            if n < FULL_ID {
+                return v1_decode(f, n);
+            } else {
+                return base64_decode(f, n, if n >= EXTENDED_ID { 18 } else { 17 });
+            }
+        } else {
+            return Uuidv7::write_str(f, n);
+        }
     }
 }
+
+fn v1_decode(f: &mut std::fmt::Formatter<'_>, val: u128) -> Result<(), std::fmt::Error> {
+    const TERM: usize = 63;
+
+    let mut shift = 17 * 6;
+
+    while shift != 0 {
+        shift -= 6;
+        let code = (val >> shift) as usize & TERM;
+
+        if code != 0 {
+            if code != TERM {
+                f.write_char(CHARS[code] as char)?;
+            }
+            break;
+        }
+    }
+
+    while shift != 0 {
+        shift -= 6;
+        f.write_char(CHARS[(val >> shift) as usize & TERM] as char)?;
+    }
+
+    Ok(())
+}
+
+fn base64_decode(
+    f: &mut std::fmt::Formatter<'_>,
+    val: u128,
+    len: usize,
+) -> Result<(), std::fmt::Error> {
+    const TERM: usize = 63;
+
+    let mut shift = (len) * 6;
+
+    while shift != 0 {
+        shift -= 6;
+        f.write_char(CHARS[(val >> shift) as usize & TERM] as char)?;
+    }
+
+    Ok(())
+}
+
 impl From<&str> for Id {
     fn from(value: &str) -> Self {
-        Self(if value.len() <= 17 {
+        Self(if value.len() <= 18 {
             pack_v1id(value.as_bytes()).into()
         } else {
             Uuidv7::from(value)

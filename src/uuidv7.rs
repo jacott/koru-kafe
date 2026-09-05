@@ -11,15 +11,18 @@ use rand::{Rng, rng};
 mod test;
 
 pub(crate) const CHARS: &[u8] = b"-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz~";
+pub const B64_MAP: [u8; 256] = {
+    let mut map = [0u8; 256];
+    let mut i = 0;
+    while i < 64 {
+        map[CHARS[i] as usize] = i as u8;
+        i += 1;
+    }
+    map
+};
 
 pub(crate) fn char_to_u6(b: u8) -> u8 {
-    match b {
-        c if c < 48 => 0,
-        c if c < 58 => c - 47,
-        c if c < 91 => c - 54,
-        126 => 63,
-        c => (c - 60) & 63,
-    }
+    B64_MAP[b as usize]
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -47,13 +50,11 @@ impl Uuidv7 {
     pub fn as_u128(&self) -> u128 {
         self.0
     }
-}
-impl Display for Uuidv7 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // 1. Combine high and low into a single 128-bit word
-        let mut val = self.0;
 
-        // 2. Process 22 characters (6 bits each)
+    pub(crate) fn write_str(
+        f: &mut std::fmt::Formatter<'_>,
+        mut val: u128,
+    ) -> Result<(), std::fmt::Error> {
         for _ in 0..22 {
             // Grab the top 6 bits (128 - 6 = 122)
             let idx = (val >> 122) as usize;
@@ -68,6 +69,12 @@ impl Display for Uuidv7 {
         Ok(())
     }
 }
+impl Display for Uuidv7 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return Uuidv7::write_str(f, self.0);
+    }
+}
+
 impl From<Uuidv7> for u128 {
     fn from(value: Uuidv7) -> Self {
         value.0
