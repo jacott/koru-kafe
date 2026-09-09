@@ -215,11 +215,14 @@ impl KoruNode {
         match self.add_client(client_tx.clone()) {
             Some((tx, slot)) => {
                 if tx.send(Frame::connect(slot, msg)).await.is_err() {
+                    self.drop_client(slot);
                     let _ = client_tx
                         .send(ClientMessage::Err(StatusCode::SERVICE_UNAVAILABLE))
                         .await;
+                    None
+                } else {
+                    Some(slot)
                 }
-                Some(slot)
             }
 
             None => {

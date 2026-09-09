@@ -19,6 +19,56 @@ async fn flush_timer(canvas: &Canvas) {
 }
 
 #[tokio::test(start_paused = true)]
+async fn extract_assignment_messages_prunes_stale_clients_when_remove_clients_empty() {
+    test_helper::async_test(async {
+        let mut jset = JoinSet::new();
+
+        jset.spawn(Task::scope(async move {
+            let db_id = Id::from("db1").as_u128() as u64;
+            let db = Task::cursor_db().get_canvas_db(db_id);
+            let canvas_id1 = "canvas1".into();
+
+            let (user1, _user1_client_rx) = node::test_helper::client_session(1, "user1", "db1");
+            let (user2, _user2_client_rx) = node::test_helper::client_session(2, "user2", "db1");
+
+            // 1. Add user1 to canvas1 and process assignments so user1 is in canvas1.clients
+            db.add_client(canvas_id1, &user1);
+            let canvas = user1.get_canvas_info().canvas.unwrap();
+            canvas.write().extract_assignment_messages(&canvas).unwrap();
+
+            assert_eq!(canvas.read().clients.len(), 1);
+
+            // 2. Simulate user1's canvas context becoming detached/cleared
+            Canvas::drop_client(&user1);
+
+            // 3. Add user2 to canvas1.
+            // add_clients contains user2, but remove_clients remains EMPTY.
+            db.add_client(canvas_id1, &user2);
+
+            assert_eq!(canvas.read().remove_clients.len(), 1);
+            assert_eq!(canvas.read().add_clients.len(), 1);
+
+            // 4. Extract assignment messages
+            canvas.write().extract_assignment_messages(&canvas).unwrap();
+
+            // Expected: canvas.clients should contain 1 active client (user2).
+            // Unfixed code fails here: partition_list was skipped because remove_clients was empty,
+            // leaving stale user1 trapped in canvas.clients alongside user2 (len == 2).
+            assert_eq!(
+                canvas.read().clients.len(),
+                1,
+                "Stale user1 should have been pruned from clients even though remove_clients was empty"
+            );
+            assert_eq!(user2.get_canvas_info().slot, 0);
+        }));
+
+        test_helper::assert_join_set(jset, 500).await;
+        Ok(())
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn double_add_client_same() {
     test_helper::async_test(async {
         let mut jset = JoinSet::new();
