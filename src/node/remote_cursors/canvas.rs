@@ -65,12 +65,27 @@ impl CanvasDb {
         if let Some(db) = self.inner.read().expect("poisoned").get(&canvas_id) {
             db.clone()
         } else {
-            self.inner
-                .write()
-                .expect("poisoned")
+            let mut guard = self.inner.write().expect("poisoned");
+            let mut is_new = false;
+
+            let canvas = guard
                 .entry(canvas_id)
-                .or_insert_with(|| Canvas::new(self.db_id, canvas_id))
-                .clone()
+                .or_insert_with(|| {
+                    is_new = true;
+                    Canvas::new(self.db_id, canvas_id)
+                })
+                .clone();
+
+            if is_new {
+                crate::info!(
+                    "new canvas {} {}, total: {}",
+                    Id::from(self.db_id as u128),
+                    canvas_id,
+                    guard.len(),
+                );
+            }
+
+            canvas
         }
     }
 
@@ -190,6 +205,11 @@ impl CanvasInner {
 
     fn add(&mut self, canvas: &Canvas, client: &ClientSession) {
         if self.clients.len() + self.add_clients.len() > 200 {
+            crate::info!(
+                "too many clients {} on {}",
+                self.clients.len(),
+                Id::from(client.get_db_id() as u128)
+            );
             // fixme! test this
             return;
         }
