@@ -71,7 +71,7 @@ impl Uuidv7 {
 }
 impl Display for Uuidv7 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return Uuidv7::write_str(f, self.0);
+        Uuidv7::write_str(f, self.0)
     }
 }
 

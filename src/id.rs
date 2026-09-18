@@ -63,12 +63,12 @@ impl Display for Id {
 
         if n < OLD_MAX_TIME {
             if n < FULL_ID {
-                return v1_decode(f, n);
+                v1_decode(f, n)
             } else {
-                return base64_decode(f, n, if n >= EXTENDED_ID { 18 } else { 17 });
+                base64_decode(f, n, if n >= EXTENDED_ID { 18 } else { 17 })
             }
         } else {
-            return Uuidv7::write_str(f, n);
+            Uuidv7::write_str(f, n)
         }
     }
 }
